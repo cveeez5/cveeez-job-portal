@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== الوظائف =====================
+model Job {
+  id          String   @id @default(cuid())
+  title       String
+  titleEn     String?
+  slug        String   @unique
+  description String?
+  icon        String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  questions    JobQuestion[]
+  applications Application[]
+}
+
+// ===================== الأسئلة =====================
+model Question {
+  id          String       @id @default(cuid())
+  text        String
+  type        QuestionType
+  placeholder String?
+  options     String[]
+  isRequired  Boolean      @default(false)
+  isGlobal    Boolean      @default(false)
+  sortOrder   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  jobs    JobQuestion[]
+  answers Answer[]
+}
+
+enum QuestionType {
+  TEXT
+  TEXTAREA
+  EMAIL
+  PHONE
+  NUMBER
+  SELECT
+  MULTI_SELECT
+  RADIO
+  CHECKBOX
+  FILE
+  IMAGE
+  URL
+  DATE
+  PORTFOLIO
+}
+
+// ===================== ربط الأسئلة بالوظائف =====================
+model JobQuestion {
+  id         String @id @default(cuid())
+  jobId      String
+  questionId String
+  sortOrder  Int    @default(0)
+
+  job      Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, questionId])
+}
+
+// ===================== التقديمات =====================
+model Application {
+  id        String            @id @default(cuid())
+  jobId     String
+  status    ApplicationStatus @default(PENDING)
+  name      String
+  email     String
+  phone     String?
+  city      String?
+  yearsOfExperience String?
+  linkedinUrl       String?
+  answersJson       Json?
+  notes     String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  job     Job      @relation(fields: [jobId], references: [id])
+  answers Answer[]
+  files   UploadedFile[]
+}
+
+enum ApplicationStatus {
+  PENDING
+  REVIEWED
+  ACCEPTED
+  REJECTED
+  SHORTLISTED
+}
+
+// ===================== الإجابات =====================
+model Answer {
+  id            String @id @default(cuid())
+  applicationId String
+  questionId    String
+  value         String
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  question    Question    @relation(fields: [questionId], references: [id])
+
+  @@unique([applicationId, questionId])
+}
+
+// ===================== الملفات المرفوعة =====================
+model UploadedFile {
+  id            String   @id @default(cuid())
+  applicationId String
+  fileName      String
+  fileKey       String
+  fileUrl       String
+  fileSize      Int
+  mimeType      String
+  createdAt     DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+// ===================== مستخدمي الداشبورد =====================
+model AdminUser {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  password  String
+  name      String
+  role      AdminRole @default(ADMIN)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+  VIEWER
+}
