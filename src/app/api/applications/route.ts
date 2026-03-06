@@ -95,9 +95,10 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    console.error('Error creating application:', error);
+    console.error('Error creating application:', error instanceof Error ? error.message : error);
+    console.error('Stack:', error instanceof Error ? error.stack : 'N/A');
     return NextResponse.json(
-      { error: 'حدث خطأ أثناء حفظ الطلب' },
+      { error: 'حدث خطأ أثناء حفظ الطلب', details: error instanceof Error ? error.message : String(error) },
       { status: 500 }
     );
   }
