@@ -136,7 +136,9 @@ export default function ApplicationDetailPage({
   const breakdownById = Object.fromEntries(
     (score?.breakdown || []).map((b) => [b.id, b])
   );
-  const tier = score ? scoreTier(score.percent) : null;
+  // الطلبات القديمة (مجاوبتش على أسئلة متقيَّمة) مفيش ليها كارت درجة
+  const hasRealScore = !!score && score.answeredScored > 0;
+  const tier = hasRealScore ? scoreTier(score!.percent) : null;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -295,7 +297,7 @@ export default function ApplicationDetailPage({
         {/* Sidebar */}
         <div className="space-y-6">
           {/* Auto score */}
-          {score && tier && (
+          {hasRealScore && score && tier && (
             <div className="glass-card p-5">
               <h3 className="font-semibold text-white mb-4">التقييم الآلي</h3>
               <div className="flex items-center gap-4">

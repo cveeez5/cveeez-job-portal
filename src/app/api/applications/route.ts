@@ -115,6 +115,9 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status');
     const search = searchParams.get('search');
     const sort = searchParams.get('sort'); // 'score' لترتيب حسب الدرجة
+    const dateFrom = searchParams.get('dateFrom'); // yyyy-mm-dd
+    const dateTo = searchParams.get('dateTo'); // yyyy-mm-dd
+    const scoreBucket = searchParams.get('scoreBucket'); // excellent|good|mid|low|flagged|unscored
 
     const skip = (page - 1) * limit;
 
@@ -137,6 +140,20 @@ export async function GET(request: NextRequest) {
       ];
     }
 
+    // فلتر التاريخ (من / إلى) — لليوم الأخير بنشمل اليوم كله
+    const createdAt: { gte?: Date; lte?: Date } = {};
+    if (dateFrom) {
+      const d = new Date(`${dateFrom}T00:00:00`);
+      if (!isNaN(d.getTime())) createdAt.gte = d;
+    }
+    if (dateTo) {
+      const d = new Date(`${dateTo}T23:59:59.999`);
+      if (!isNaN(d.getTime())) createdAt.lte = d;
+    }
+    if (createdAt.gte || createdAt.lte) {
+      where.createdAt = createdAt;
+    }
+
     const include = {
       job: { select: { title: true, slug: true, icon: true } },
       files: { select: { fileUrl: true, fileName: true } },
@@ -144,24 +161,49 @@ export async function GET(request: NextRequest) {
     } as const;
 
     // بنحسب الدرجة من answersJson + slug الوظيفة (الـ include بيرجّع كل الحقول القياسية)
+    // الطلبات القديمة (اللي مجاوبتش على أي سؤال متقيَّم) درجتها null عشان تظهر "—" مش 0%
     const attachScore = <T extends { job: { slug: string }; answersJson: unknown }>(app: T) => {
       const s = scoreApplication(
         app.job.slug,
         app.answersJson as Record<string, string> | null
       );
-      return { ...app, score: s.hasScoring ? s.percent : null, scoreFlags: s.flags.length };
+      const score = s.hasScoring && s.answeredScored > 0 ? s.percent : null;
+      return { ...app, score, scoreFlags: s.flags.length };
     };
 
-    // ترتيب حسب الدرجة: لازم نحسب على كل النتائج المطابقة الأول بعدين نقسّم الصفحات
-    if (sort === 'score') {
+    const inBucket = (score: number | null, flags: number): boolean => {
+      switch (scoreBucket) {
+        case 'excellent':
+          return score !== null && score >= 80;
+        case 'good':
+          return score !== null && score >= 60 && score < 80;
+        case 'mid':
+          return score !== null && score >= 40 && score < 60;
+        case 'low':
+          return score !== null && score < 40;
+        case 'flagged':
+          return flags > 0;
+        case 'unscored':
+          return score === null;
+        default:
+          return true;
+      }
+    };
+
+    // مسار في الذاكرة: مطلوب لما نرتّب بالدرجة أو نفلتر بشريحة درجة
+    // (الدرجة محسوبة وقت العرض مش متخزّنة في قاعدة البيانات)
+    if (sort === 'score' || scoreBucket) {
       const all = await prisma.application.findMany({
         where,
         include,
         orderBy: { createdAt: 'desc' },
       });
-      const scored = all
-        .map(attachScore)
-        .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+      let scored = all.map(attachScore);
+      if (scoreBucket) {
+        scored = scored.filter((a) => inBucket(a.score, a.scoreFlags));
+      }
+      // نرتّب بالدرجة (الأعلى أولاً) لو اتطلب الترتيب أو الفلترة بالدرجة
+      scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
       const total = scored.length;
       const data = scored.slice(skip, skip + limit);
 

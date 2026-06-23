@@ -32,12 +32,26 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const jobSlugFilter = searchParams.get('job');
     const statusFilter = searchParams.get('status');
+    const dateFrom = searchParams.get('dateFrom');
+    const dateTo = searchParams.get('dateTo');
+    const scoreBucket = searchParams.get('scoreBucket');
 
     const where: Record<string, unknown> = {};
     if (jobSlugFilter) where.job = { slug: jobSlugFilter };
     if (statusFilter) where.status = statusFilter;
 
-    const applications = await prisma.application.findMany({
+    const createdAtFilter: { gte?: Date; lte?: Date } = {};
+    if (dateFrom) {
+      const d = new Date(`${dateFrom}T00:00:00`);
+      if (!isNaN(d.getTime())) createdAtFilter.gte = d;
+    }
+    if (dateTo) {
+      const d = new Date(`${dateTo}T23:59:59.999`);
+      if (!isNaN(d.getTime())) createdAtFilter.lte = d;
+    }
+    if (createdAtFilter.gte || createdAtFilter.lte) where.createdAt = createdAtFilter;
+
+    let applications = await prisma.application.findMany({
       where,
       include: {
         job: { select: { title: true, slug: true, icon: true } },
@@ -48,6 +62,33 @@ export async function GET(request: NextRequest) {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    // فلتر شريحة الدرجة (محسوب وقت التصدير)
+    if (scoreBucket) {
+      const inBucket = (score: number | null, flags: number): boolean => {
+        switch (scoreBucket) {
+          case 'excellent':
+            return score !== null && score >= 80;
+          case 'good':
+            return score !== null && score >= 60 && score < 80;
+          case 'mid':
+            return score !== null && score >= 40 && score < 60;
+          case 'low':
+            return score !== null && score < 40;
+          case 'flagged':
+            return flags > 0;
+          case 'unscored':
+            return score === null;
+          default:
+            return true;
+        }
+      };
+      applications = applications.filter((app) => {
+        const s = scoreApplication(app.job.slug, app.answersJson as Record<string, string> | null);
+        const score = s.hasScoring && s.answeredScored > 0 ? s.percent : null;
+        return inBucket(score, s.flags.length);
+      });
+    }
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'CVEEEZ Admin';
@@ -80,7 +121,7 @@ export async function GET(request: NextRequest) {
       if (scored) {
         for (const app of apps) {
           const s = scoreApplication(jobSlug, app.answersJson as Record<string, string> | null);
-          scoreById.set(app.id, s.hasScoring ? s.percent : null);
+          scoreById.set(app.id, s.hasScoring && s.answeredScored > 0 ? s.percent : null);
         }
         sheetApps = [...apps].sort(
           (a, b) => (scoreById.get(b.id) ?? -1) - (scoreById.get(a.id) ?? -1)

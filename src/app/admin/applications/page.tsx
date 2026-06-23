@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import Link from 'next/link';
 import {
   Search,
@@ -14,6 +14,11 @@ import {
   Briefcase,
   Loader2,
   ArrowDownWideNarrow,
+  Award,
+  Calendar,
+  X,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 import { JOBS } from '@/lib/constants';
 import { scoreTier } from '@/lib/scoring';
@@ -62,21 +67,48 @@ export default function AdminApplicationsPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [jobFilter, setJobFilter] = useState('');
+  const [scoreBucket, setScoreBucket] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [sortByScore, setSortByScore] = useState(false);
+  const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
+
+  const buildParams = useCallback(
+    (extra?: Record<string, string>) => {
+      const params = new URLSearchParams();
+      if (search) params.set('search', search);
+      if (statusFilter) params.set('status', statusFilter);
+      if (jobFilter) params.set('job', jobFilter);
+      if (scoreBucket) params.set('scoreBucket', scoreBucket);
+      if (dateFrom) params.set('dateFrom', dateFrom);
+      if (dateTo) params.set('dateTo', dateTo);
+      if (sortByScore) params.set('sort', 'score');
+      Object.entries(extra || {}).forEach(([k, v]) => params.set(k, v));
+      return params;
+    },
+    [search, statusFilter, jobFilter, scoreBucket, dateFrom, dateTo, sortByScore]
+  );
+
+  const activeFilters =
+    !!search || !!statusFilter || !!jobFilter || !!scoreBucket || !!dateFrom || !!dateTo;
+
+  const resetFilters = () => {
+    setSearch('');
+    setStatusFilter('');
+    setJobFilter('');
+    setScoreBucket('');
+    setDateFrom('');
+    setDateTo('');
+    setSortByScore(false);
+    setPage(1);
+  };
 
   const fetchApplications = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set('page', page.toString());
-      params.set('limit', '20');
-      if (search) params.set('search', search);
-      if (statusFilter) params.set('status', statusFilter);
-      if (jobFilter) params.set('job', jobFilter);
-      if (sortByScore) params.set('sort', 'score');
-
+      const params = buildParams({ page: page.toString(), limit: pageSize.toString() });
       const res = await fetch(`/api/applications?${params}`);
       if (res.ok) {
         const data = await res.json();
@@ -88,15 +120,14 @@ export default function AdminApplicationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, statusFilter, jobFilter, sortByScore]);
+  }, [buildParams, page, pageSize]);
 
   const handleExport = async () => {
     setExporting(true);
     try {
-      const params = new URLSearchParams();
-      if (jobFilter) params.set('job', jobFilter);
-      if (statusFilter) params.set('status', statusFilter);
-
+      // نصدّر نفس النتائج المفلترة (من غير ترتيب/صفحات)
+      const params = buildParams();
+      params.delete('sort');
       const res = await fetch(`/api/admin/export?${params}`);
       if (!res.ok) {
         alert('فشل تصدير الملف');
@@ -183,13 +214,14 @@ export default function AdminApplicationsPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
+      <div className="glass-card p-4 space-y-3">
+        {/* صف البحث */}
+        <div className="relative">
           <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
           <input
             type="text"
             className="glass-input pr-10 w-full"
-            placeholder="ابحث بالاسم أو الإيميل..."
+            placeholder="ابحث بالاسم أو الإيميل أو الموبايل..."
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
@@ -197,58 +229,121 @@ export default function AdminApplicationsPage() {
             }}
           />
         </div>
-        <div className="relative">
-          <Briefcase className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
-          <select
-            className="glass-select pr-10 min-w-[180px]"
-            value={jobFilter}
-            onChange={(e) => {
-              setJobFilter(e.target.value);
+
+        {/* صف الفلاتر */}
+        <div className="flex flex-wrap items-end gap-3">
+          <FilterField label="الوظيفة" icon={<Briefcase className="w-3.5 h-3.5" />}>
+            <select
+              className="glass-select pr-9 min-w-[150px]"
+              value={jobFilter}
+              onChange={(e) => {
+                setJobFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">كل الوظائف</option>
+              {JOBS.map((j) => (
+                <option key={j.id} value={j.id}>
+                  {j.icon} {j.title}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+
+          <FilterField label="الحالة" icon={<Filter className="w-3.5 h-3.5" />}>
+            <select
+              className="glass-select pr-9 min-w-[140px]"
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">كل الحالات</option>
+              {Object.entries(statusLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+
+          <FilterField label="الدرجة" icon={<Award className="w-3.5 h-3.5" />}>
+            <select
+              className="glass-select pr-9 min-w-[150px]"
+              value={scoreBucket}
+              onChange={(e) => {
+                setScoreBucket(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">كل الدرجات</option>
+              <option value="excellent">ممتاز (80%+)</option>
+              <option value="good">جيد جداً (60–79%)</option>
+              <option value="mid">متوسط (40–59%)</option>
+              <option value="low">ضعيف (أقل من 40%)</option>
+              <option value="flagged">⚠️ فيها تنبيهات</option>
+              <option value="unscored">بدون تقييم (قديمة)</option>
+            </select>
+          </FilterField>
+
+          <FilterField label="من تاريخ" icon={<Calendar className="w-3.5 h-3.5" />}>
+            <input
+              type="date"
+              dir="ltr"
+              className="glass-input text-left min-w-[140px]"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => {
+                setDateFrom(e.target.value);
+                setPage(1);
+              }}
+            />
+          </FilterField>
+
+          <FilterField label="إلى تاريخ" icon={<Calendar className="w-3.5 h-3.5" />}>
+            <input
+              type="date"
+              dir="ltr"
+              className="glass-input text-left min-w-[140px]"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => {
+                setDateTo(e.target.value);
+                setPage(1);
+              }}
+            />
+          </FilterField>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSortByScore((v) => !v);
               setPage(1);
             }}
+            className={`flex items-center gap-2 h-[42px] px-4 rounded-xl border transition-colors text-sm whitespace-nowrap ${
+              sortByScore
+                ? 'bg-green-500/15 border-green-500/30 text-green-400'
+                : 'bg-white/5 border-white/5 text-white/50 hover:text-white'
+            }`}
+            title="ترتيب الطلبات حسب الدرجة الآلية (الأعلى أولاً)"
           >
-            <option value="">كل الوظائف</option>
-            {JOBS.map((j) => (
-              <option key={j.id} value={j.id}>
-                {j.icon} {j.title}
-              </option>
-            ))}
-          </select>
+            <ArrowDownWideNarrow className="w-4 h-4" />
+            ترتيب حسب الدرجة
+          </button>
+
+          {activeFilters && (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="flex items-center gap-2 h-[42px] px-4 rounded-xl border border-white/5 bg-white/5 text-white/50 hover:text-red-400 transition-colors text-sm whitespace-nowrap"
+              title="مسح كل الفلاتر"
+            >
+              <X className="w-4 h-4" />
+              مسح الفلاتر
+            </button>
+          )}
         </div>
-        <div className="relative">
-          <Filter className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
-          <select
-            className="glass-select pr-10 min-w-[160px]"
-            value={statusFilter}
-            onChange={(e) => {
-              setStatusFilter(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">كل الحالات</option>
-            {Object.entries(statusLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            setSortByScore((v) => !v);
-            setPage(1);
-          }}
-          className={`flex items-center gap-2 px-4 rounded-xl border transition-colors text-sm whitespace-nowrap ${
-            sortByScore
-              ? 'bg-green-500/15 border-green-500/30 text-green-400'
-              : 'bg-white/5 border-white/5 text-white/50 hover:text-white'
-          }`}
-          title="ترتيب الطلبات حسب الدرجة الآلية (الأعلى أولاً)"
-        >
-          <ArrowDownWideNarrow className="w-4 h-4" />
-          ترتيب حسب الدرجة
-        </button>
       </div>
 
       {/* Table */}
@@ -376,28 +471,163 @@ export default function AdminApplicationsPage() {
           </div>
 
           {/* Pagination */}
-          {pagination && pagination.totalPages > 1 && (
-            <div className="flex items-center justify-center gap-3">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-white disabled:opacity-30"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-              <span className="text-sm text-white/40">
-                صفحة {page} من {pagination.totalPages}
-              </span>
-              <button
-                onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
-                disabled={page === pagination.totalPages}
-                className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-white disabled:opacity-30"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-            </div>
+          {pagination && (
+            <Paginator
+              page={page}
+              totalPages={pagination.totalPages}
+              total={pagination.total}
+              limit={pagination.limit}
+              pageSize={pageSize}
+              onPage={setPage}
+              onPageSize={(n) => {
+                setPageSize(n);
+                setPage(1);
+              }}
+            />
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+function FilterField({
+  label,
+  icon,
+  children,
+}: {
+  label: string;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] text-white/40 flex items-center gap-1 pr-1">
+        {icon}
+        {label}
+      </span>
+      <div className="relative">{children}</div>
+    </div>
+  );
+}
+
+function getPageList(current: number, total: number): (number | string)[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: (number | string)[] = [1];
+  const left = Math.max(2, current - 1);
+  const right = Math.min(total - 1, current + 1);
+  if (left > 2) pages.push('…');
+  for (let i = left; i <= right; i++) pages.push(i);
+  if (right < total - 1) pages.push('…');
+  pages.push(total);
+  return pages;
+}
+
+function Paginator({
+  page,
+  totalPages,
+  total,
+  limit,
+  pageSize,
+  onPage,
+  onPageSize,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  limit: number;
+  pageSize: number;
+  onPage: (p: number) => void;
+  onPageSize: (n: number) => void;
+}) {
+  const from = total === 0 ? 0 : (page - 1) * limit + 1;
+  const to = Math.min(page * limit, total);
+  const pages = getPageList(page, Math.max(1, totalPages));
+
+  const navBtn =
+    'min-w-[36px] h-9 px-2 flex items-center justify-center rounded-lg text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+      <div className="flex items-center gap-3 text-xs text-white/40">
+        <span>
+          بيعرض <span className="text-white/70">{from}</span>–
+          <span className="text-white/70">{to}</span> من{' '}
+          <span className="text-white/70">{total}</span>
+        </span>
+        <span className="hidden sm:inline text-white/10">|</span>
+        <label className="flex items-center gap-1.5">
+          <span>لكل صفحة:</span>
+          <select
+            className="glass-select py-1 pr-2 text-xs"
+            value={pageSize}
+            onChange={(e) => onPageSize(parseInt(e.target.value))}
+          >
+            {[20, 50, 100].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onPage(1)}
+            disabled={page === 1}
+            className={`${navBtn} bg-white/5 text-white/40 hover:text-white`}
+            title="الصفحة الأولى"
+          >
+            <ChevronsRight className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onPage(Math.max(1, page - 1))}
+            disabled={page === 1}
+            className={`${navBtn} bg-white/5 text-white/40 hover:text-white`}
+            title="السابق"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+
+          {pages.map((p, i) =>
+            typeof p === 'string' ? (
+              <span key={`gap-${i}`} className="px-1 text-white/30 select-none">
+                {p}
+              </span>
+            ) : (
+              <button
+                key={p}
+                onClick={() => onPage(p)}
+                className={`${navBtn} ${
+                  p === page
+                    ? 'bg-green-500/20 text-green-400 font-bold'
+                    : 'bg-white/5 text-white/50 hover:text-white'
+                }`}
+              >
+                {p}
+              </button>
+            )
+          )}
+
+          <button
+            onClick={() => onPage(Math.min(totalPages, page + 1))}
+            disabled={page === totalPages}
+            className={`${navBtn} bg-white/5 text-white/40 hover:text-white`}
+            title="التالي"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onPage(totalPages)}
+            disabled={page === totalPages}
+            className={`${navBtn} bg-white/5 text-white/40 hover:text-white`}
+            title="الصفحة الأخيرة"
+          >
+            <ChevronsLeft className="w-4 h-4" />
+          </button>
+        </div>
       )}
     </div>
   );
