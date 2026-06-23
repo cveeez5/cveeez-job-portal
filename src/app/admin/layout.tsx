@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   FileText,
   Briefcase,
+  HelpCircle,
   LogOut,
   Menu,
   X,
@@ -17,6 +18,7 @@ const navItems = [
   { href: '/admin', label: 'لوحة التحكم', icon: LayoutDashboard },
   { href: '/admin/applications', label: 'الطلبات', icon: FileText },
   { href: '/admin/jobs', label: 'الوظائف', icon: Briefcase },
+  { href: '/admin/questions', label: 'الأسئلة', icon: HelpCircle },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {

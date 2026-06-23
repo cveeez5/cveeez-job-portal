@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { uploadToR2 } from '@/lib/cloudflare-r2';
+import { scoreApplication } from '@/lib/scoring';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,6 +114,7 @@ export async function GET(request: NextRequest) {
     const jobSlug = searchParams.get('job');
     const status = searchParams.get('status');
     const search = searchParams.get('search');
+    const sort = searchParams.get('sort'); // 'score' لترتيب حسب الدرجة
 
     const skip = (page - 1) * limit;
 
@@ -135,14 +137,44 @@ export async function GET(request: NextRequest) {
       ];
     }
 
+    const include = {
+      job: { select: { title: true, slug: true, icon: true } },
+      files: { select: { fileUrl: true, fileName: true } },
+      _count: { select: { answers: true } },
+    } as const;
+
+    // بنحسب الدرجة من answersJson + slug الوظيفة (الـ include بيرجّع كل الحقول القياسية)
+    const attachScore = <T extends { job: { slug: string }; answersJson: unknown }>(app: T) => {
+      const s = scoreApplication(
+        app.job.slug,
+        app.answersJson as Record<string, string> | null
+      );
+      return { ...app, score: s.hasScoring ? s.percent : null, scoreFlags: s.flags.length };
+    };
+
+    // ترتيب حسب الدرجة: لازم نحسب على كل النتائج المطابقة الأول بعدين نقسّم الصفحات
+    if (sort === 'score') {
+      const all = await prisma.application.findMany({
+        where,
+        include,
+        orderBy: { createdAt: 'desc' },
+      });
+      const scored = all
+        .map(attachScore)
+        .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+      const total = scored.length;
+      const data = scored.slice(skip, skip + limit);
+
+      return NextResponse.json({
+        data,
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      });
+    }
+
     const [applications, total] = await Promise.all([
       prisma.application.findMany({
         where,
-        include: {
-          job: { select: { title: true, slug: true, icon: true } },
-          files: { select: { fileUrl: true, fileName: true } },
-          _count: { select: { answers: true } },
-        },
+        include,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
@@ -151,7 +183,7 @@ export async function GET(request: NextRequest) {
     ]);
 
     return NextResponse.json({
-      data: applications,
+      data: applications.map(attachScore),
       pagination: {
         page,
         limit,

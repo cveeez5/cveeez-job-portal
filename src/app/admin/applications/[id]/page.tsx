@@ -14,6 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { JOB_QUESTIONS } from '@/lib/constants';
+import { scoreApplication, scoreTier, hasScoring } from '@/lib/scoring';
 
 interface ApplicationDetail {
   id: string;
@@ -127,6 +128,15 @@ export default function ApplicationDetailPage({
       </div>
     );
   }
+
+  const showScore = hasScoring(application.job.slug);
+  const score = showScore
+    ? scoreApplication(application.job.slug, application.answersJson)
+    : null;
+  const breakdownById = Object.fromEntries(
+    (score?.breakdown || []).map((b) => [b.id, b])
+  );
+  const tier = score ? scoreTier(score.percent) : null;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -247,13 +257,33 @@ export default function ApplicationDetailPage({
                   const jobQuestions = JOB_QUESTIONS[application.job.slug] || [];
                   const question = jobQuestions.find((q) => q.id === questionId);
                   const questionText = question?.text || questionId;
+                  const b = breakdownById[questionId];
                   return (
                     <div key={questionId} className="border-b border-white/5 last:border-0 pb-3">
-                      <p className="text-xs text-white/40 mb-1">
-                        <span className="text-green-400/60">{index + 1}. </span>
-                        {questionText}
-                      </p>
-                      <p className="text-sm text-white/90">{answer}</p>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <p className="text-xs text-white/40 flex-1">
+                          <span className="text-green-400/60">{index + 1}. </span>
+                          {questionText}
+                        </p>
+                        {b && b.weight > 0 && (
+                          <span
+                            className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-md ${
+                              b.isRedFlag
+                                ? 'bg-red-500/15 text-red-400'
+                                : b.fraction >= 0.75
+                                ? 'bg-green-500/15 text-green-400'
+                                : b.fraction >= 0.4
+                                ? 'bg-yellow-500/15 text-yellow-400'
+                                : 'bg-white/5 text-white/40'
+                            }`}
+                            title={`${b.earned.toFixed(1)} من ${b.weight} نقطة`}
+                          >
+                            {b.isRedFlag ? '⚠️ ' : ''}
+                            {b.earned.toFixed(1)}/{b.weight}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-white/90 whitespace-pre-wrap">{answer}</p>
                     </div>
                   );
                 })}
@@ -264,6 +294,46 @@ export default function ApplicationDetailPage({
 
         {/* Sidebar */}
         <div className="space-y-6">
+          {/* Auto score */}
+          {score && tier && (
+            <div className="glass-card p-5">
+              <h3 className="font-semibold text-white mb-4">التقييم الآلي</h3>
+              <div className="flex items-center gap-4">
+                <div className={`flex flex-col items-center justify-center w-20 h-20 rounded-2xl ${tier.color}`}>
+                  <span className="text-2xl font-extrabold leading-none">{score.percent}</span>
+                  <span className="text-[10px] opacity-70">من 100</span>
+                </div>
+                <div className="flex-1">
+                  <p className={`text-sm font-bold ${tier.text}`}>{tier.label}</p>
+                  <p className="text-xs text-white/40 mt-1">
+                    جاوب على {score.answeredScored} من {score.totalScored} سؤال مؤثّر
+                  </p>
+                  <div className="mt-2 h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-l from-green-400 to-emerald-500"
+                      style={{ width: `${score.percent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {score.flags.length > 0 && (
+                <div className="mt-4 space-y-1.5">
+                  <p className="text-xs text-red-400/80 font-medium">⚠️ نقاط تستدعي الانتباه:</p>
+                  {score.flags.map((f, i) => (
+                    <p key={i} className="text-xs text-red-300/70 bg-red-500/5 rounded-lg px-2 py-1">
+                      {f}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              <p className="text-[11px] text-white/25 mt-4 leading-relaxed">
+                الدرجة تقديرية تلقائية بتساعدك في الترتيب — مش بديل عن مراجعتك ومراجعة الانترفيو.
+              </p>
+            </div>
+          )}
+
           {/* Status + Notes */}
           <div className="glass-card p-5">
             <h3 className="font-semibold text-white mb-4">إجراءات</h3>

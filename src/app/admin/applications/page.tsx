@@ -10,7 +10,13 @@ import {
   ChevronRight,
   FileText,
   Filter,
+  Download,
+  Briefcase,
+  Loader2,
+  ArrowDownWideNarrow,
 } from 'lucide-react';
+import { JOBS } from '@/lib/constants';
+import { scoreTier } from '@/lib/scoring';
 
 interface Application {
   id: string;
@@ -22,6 +28,8 @@ interface Application {
   job: { title: string; slug: string; icon: string };
   files: Array<{ fileUrl: string; fileName: string }>;
   _count: { answers: number };
+  score?: number | null;
+  scoreFlags?: number;
 }
 
 interface Pagination {
@@ -53,7 +61,10 @@ export default function AdminApplicationsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [jobFilter, setJobFilter] = useState('');
+  const [sortByScore, setSortByScore] = useState(false);
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
 
   const fetchApplications = useCallback(async () => {
     setLoading(true);
@@ -63,6 +74,8 @@ export default function AdminApplicationsPage() {
       params.set('limit', '20');
       if (search) params.set('search', search);
       if (statusFilter) params.set('status', statusFilter);
+      if (jobFilter) params.set('job', jobFilter);
+      if (sortByScore) params.set('sort', 'score');
 
       const res = await fetch(`/api/applications?${params}`);
       if (res.ok) {
@@ -75,7 +88,40 @@ export default function AdminApplicationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, statusFilter]);
+  }, [page, search, statusFilter, jobFilter, sortByScore]);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (jobFilter) params.set('job', jobFilter);
+      if (statusFilter) params.set('status', statusFilter);
+
+      const res = await fetch(`/api/admin/export?${params}`);
+      if (!res.ok) {
+        alert('فشل تصدير الملف');
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const date = new Date().toISOString().slice(0, 10);
+      a.download = jobFilter
+        ? `applications-${jobFilter}-${date}.xlsx`
+        : `applications-all-${date}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('حدث خطأ أثناء التصدير');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     fetchApplications();
@@ -108,13 +154,32 @@ export default function AdminApplicationsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">الطلبات</h1>
           <p className="text-sm text-white/40 mt-1">
             إجمالي {pagination?.total || 0} طلب
+            {jobFilter && ` (مفلتر بوظيفة: ${JOBS.find((j) => j.id === jobFilter)?.title || jobFilter})`}
           </p>
         </div>
+        <button
+          onClick={handleExport}
+          disabled={exporting}
+          className="btn-primary flex items-center gap-2 disabled:opacity-60"
+          title="تصدير الطلبات إلى Excel (شيت لكل وظيفة)"
+        >
+          {exporting ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              جاري التصدير...
+            </>
+          ) : (
+            <>
+              <Download className="w-4 h-4" />
+              تصدير Excel
+            </>
+          )}
+        </button>
       </div>
 
       {/* Filters */}
@@ -131,6 +196,24 @@ export default function AdminApplicationsPage() {
               setPage(1);
             }}
           />
+        </div>
+        <div className="relative">
+          <Briefcase className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+          <select
+            className="glass-select pr-10 min-w-[180px]"
+            value={jobFilter}
+            onChange={(e) => {
+              setJobFilter(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">كل الوظائف</option>
+            {JOBS.map((j) => (
+              <option key={j.id} value={j.id}>
+                {j.icon} {j.title}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="relative">
           <Filter className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
@@ -150,6 +233,22 @@ export default function AdminApplicationsPage() {
             ))}
           </select>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            setSortByScore((v) => !v);
+            setPage(1);
+          }}
+          className={`flex items-center gap-2 px-4 rounded-xl border transition-colors text-sm whitespace-nowrap ${
+            sortByScore
+              ? 'bg-green-500/15 border-green-500/30 text-green-400'
+              : 'bg-white/5 border-white/5 text-white/50 hover:text-white'
+          }`}
+          title="ترتيب الطلبات حسب الدرجة الآلية (الأعلى أولاً)"
+        >
+          <ArrowDownWideNarrow className="w-4 h-4" />
+          ترتيب حسب الدرجة
+        </button>
       </div>
 
       {/* Table */}
@@ -172,6 +271,7 @@ export default function AdminApplicationsPage() {
                   <tr className="border-b border-white/5">
                     <th className="text-right text-xs text-white/40 font-medium p-4">المتقدم</th>
                     <th className="text-right text-xs text-white/40 font-medium p-4">الوظيفة</th>
+                    <th className="text-right text-xs text-white/40 font-medium p-4">الدرجة</th>
                     <th className="text-right text-xs text-white/40 font-medium p-4">الحالة</th>
                     <th className="text-right text-xs text-white/40 font-medium p-4">التاريخ</th>
                     <th className="text-right text-xs text-white/40 font-medium p-4">إجراءات</th>
@@ -191,6 +291,9 @@ export default function AdminApplicationsPage() {
                         <span className="text-sm text-white/70">
                           {app.job.icon} {app.job.title}
                         </span>
+                      </td>
+                      <td className="p-4">
+                        <ScoreBadge score={app.score} flags={app.scoreFlags} />
                       </td>
                       <td className="p-4">
                         <span
@@ -238,11 +341,14 @@ export default function AdminApplicationsPage() {
                     <p className="font-medium text-white text-sm">{app.name}</p>
                     <p className="text-xs text-white/40">{app.email}</p>
                   </div>
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full ${statusColors[app.status] || ''}`}
-                  >
-                    {statusLabels[app.status] || app.status}
-                  </span>
+                  <div className="flex flex-col items-end gap-1.5">
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full ${statusColors[app.status] || ''}`}
+                    >
+                      {statusLabels[app.status] || app.status}
+                    </span>
+                    <ScoreBadge score={app.score} flags={app.scoreFlags} />
+                  </div>
                 </div>
                 <div className="flex items-center justify-between text-xs text-white/40">
                   <span>
@@ -294,5 +400,21 @@ export default function AdminApplicationsPage() {
         </>
       )}
     </div>
+  );
+}
+
+function ScoreBadge({ score, flags }: { score?: number | null; flags?: number }) {
+  if (score === null || score === undefined) {
+    return <span className="text-xs text-white/20">—</span>;
+  }
+  const tier = scoreTier(score);
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${tier.color}`}
+      title={`${tier.label}${flags ? ` • ${flags} تنبيه` : ''}`}
+    >
+      {score}%
+      {!!flags && flags > 0 && <span className="text-red-400" title={`${flags} تنبيه`}>⚠️</span>}
+    </span>
   );
 }
