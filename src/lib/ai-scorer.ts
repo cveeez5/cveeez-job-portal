@@ -47,7 +47,9 @@ export interface AiScorer {
   score(items: AiScoreRequest[]): Promise<AiScoreOutcome>;
 }
 
-const DEFAULT_TIMEOUT_MS = 25_000;
+// الموديلات الكبيرة بتاخد 20–50 ثانية على 10 أسئلة مفتوحة. التقييم بيجري في
+// الخلفية بعد ما الرد يوصل للمتقدمة، فالانتظار ده مش بيأخّر حد.
+const DEFAULT_TIMEOUT_MS = 45_000;
 
 // ===================== تقييم محلي تقريبي (fallback) =====================
 // مش بديل عن الـAI — بيقيس الاكتمال والتنظيم بس (طول + إشارات بنية).
@@ -101,6 +103,7 @@ const SYSTEM_INSTRUCTION = `أنت مقيّم توظيف محترف بيقيّم
 6. لو الإجابة شكلها منسوخة من مصدر عام ومش مخصوصة للسؤال، نزّل الدرجة.
 7. الدرجة لازم تكون بين 0 و maxScore بتاع السؤال (ممكن تكون بكسر عشري واحد).
 8. اكتب سبب مختصر جدًا بالعربي (سطر واحد، 15 كلمة كحد أقصى) يوضّح ليه الدرجة دي.
+9. مهم: الخصومات على الدرجة الإجمالية بيطبقها النظام لوحده بره تقييمك. متخصمش أنت أي درجات بسبب قاعدة عامة (زي إن الإجابة لازم تبدأ بكلمة معينة) — قيّم جودة محتوى الإجابة بس.
 
 رجّع JSON بس، من غير أي كلام زيادة.`;
 
@@ -133,6 +136,28 @@ interface RawResult {
   questionId?: string;
   score?: number;
   reason?: string;
+}
+
+/**
+ * موديلات كتير بتغلّف الـJSON في ```json أو بتسبقه بسطر كلام، خصوصاً لما الـ
+ * response_format مش مدعوم. بنستخرج أول كائن JSON بدل ما الرد كله يضيع.
+ */
+function parseResults(text: string): RawResult[] {
+  const attempt = (raw: string) => (JSON.parse(raw) as { results?: RawResult[] }).results;
+
+  try {
+    const direct = attempt(text);
+    if (direct) return direct;
+  } catch {
+    // بنكمّل للاستخراج اليدوي
+  }
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : text;
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error('مفيش JSON في الرد');
+  return attempt(body.slice(start, end + 1)) || [];
 }
 
 /** بنقصّ كل درجة على مدى سؤالها مهما رجّع الموديل، وبنرجّع اللي نقص. */
@@ -207,7 +232,7 @@ function geminiAttempt(label: string, apiKey: string, model: string): Attempt {
       });
       const raw = response.text;
       if (!raw) throw new Error('رد فاضي من Gemini');
-      return (JSON.parse(raw) as { results?: RawResult[] }).results || [];
+      return parseResults(raw);
     },
   };
 }
@@ -227,16 +252,12 @@ function openAiCompatibleAttempt(
     provider: 'openai-compatible',
     model,
     async run(items, signal) {
-      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
+      const call = async (jsonMode: boolean): Promise<RawResult[]> => {
+        const body: Record<string, unknown> = {
           model,
           temperature: 0,
-          response_format: { type: 'json_object' },
+          // من غير الحد ده بعض المزودين بيقصّوا الرد فبيرجع JSON ناقص
+          max_tokens: 4096,
           messages: [
             {
               role: 'system',
@@ -244,20 +265,32 @@ function openAiCompatibleAttempt(
             },
             { role: 'user', content: buildPrompt(items) },
           ],
-        }),
-        signal,
-      });
+        };
+        if (jsonMode) body.response_format = { type: 'json_object' };
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 160)}`);
-      }
+        const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify(body),
+          signal,
+        });
 
-      const json = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
+        if (!res.ok) {
+          const detail = (await res.text()).slice(0, 160);
+          // موديلات كتير مش بتدعم response_format — بنعيد من غيره مرة واحدة
+          if (jsonMode && (res.status === 400 || res.status === 422)) return call(false);
+          throw new Error(`HTTP ${res.status} — ${detail}`);
+        }
+
+        const json = (await res.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const raw = json.choices?.[0]?.message?.content;
+        if (!raw) throw new Error('رد فاضي من المزود الاحتياطي');
+        return parseResults(raw);
       };
-      const raw = json.choices?.[0]?.message?.content;
-      if (!raw) throw new Error('رد فاضي من المزود الاحتياطي');
-      return (JSON.parse(raw) as { results?: RawResult[] }).results || [];
+
+      return call(true);
     },
   };
 }
@@ -289,8 +322,14 @@ function buildChain(): Attempt[] {
   const fbKey = process.env.FALLBACK_AI_API_KEY;
   const fbUrl = process.env.FALLBACK_AI_BASE_URL;
   const fbModel = process.env.FALLBACK_AI_MODEL;
+  const fbModel2 = process.env.FALLBACK_AI_MODEL_2;
+
   if (fbKey && fbUrl && fbModel) {
     chain.push(openAiCompatibleAttempt(`fallback:${fbModel}`, fbKey, fbUrl, fbModel));
+    // موديل تاني على نفس المزود — بيغطي حالة إن الأول واقع أو مزحوم
+    if (fbModel2 && fbModel2 !== fbModel) {
+      chain.push(openAiCompatibleAttempt(`fallback:${fbModel2}`, fbKey, fbUrl, fbModel2));
+    }
   }
 
   return chain;

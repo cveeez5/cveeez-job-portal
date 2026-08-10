@@ -166,6 +166,21 @@ export function findMissingRequired(answers: Answers): string[] {
 }
 
 // ===================== طلبات تقييم الـAI =====================
+// الخصومات على الدرجة الإجمالية (زي اختبار «جاهزة» المخفي) بيطبقها المحرك هنا.
+// بس نصها مكتوب جوه الـrubric بتاع السؤال، فلو بعتناه للموديل زي ما هو بيطبّقه
+// هو كمان على درجة السؤال والخصم بيتحسب مرتين — وده اللي بيخلي الفرق 20 بدل 10.
+// بنشيل السطر ده من النسخة اللي بتروح للـAI بس؛ الـrubric الأصلي في
+// moderator-v2.ts مابيتغيّرش (هو المصدر الوحيد والأدمن بيقراه منه).
+const TOTAL_PENALTY_LINE = /خصم\s*[0-9٠-٩]+\s*(درجة|درجات)\s*من\s*الإجمالي/;
+
+export function rubricForAi(rubric: string): string {
+  return rubric
+    .split('\n')
+    .filter((line) => !TOTAL_PENALTY_LINE.test(line))
+    .join('\n')
+    .trim();
+}
+
 /** الأسئلة المفتوحة اللي وزنها > 0 وعندها rubric. */
 export function buildAiScoreRequests(answers: Answers): AiScoreRequest[] {
   const requests: AiScoreRequest[] = [];
@@ -176,7 +191,7 @@ export function buildAiScoreRequests(answers: Answers): AiScoreRequest[] {
       requests.push({
         questionId: question.id,
         label: question.label,
-        rubric: question.rubric,
+        rubric: rubricForAi(question.rubric),
         maxScore: weight,
         answer: answerOf(answers, question.id),
       });

@@ -4,15 +4,31 @@
  * كل حالة هنا إجابتها الصح معروفة مقدمًا من الـrubric نفسه، فبنقيس فعليًا
  * أنهي موديل بيلتزم بالـrubric مش أنهي موديل «شكله أحدث».
  *
+ * جيمناي:
  *   GEMINI_API_KEY=xxx node scripts/bench-scoring.mjs gemini-3.6-flash gemini-2.5-flash
  *
+ * أي مزود متوافق مع OpenAI (NVIDIA NIM / OpenRouter / Groq / OpenAI …):
+ *   node scripts/bench-scoring.mjs --openai https://integrate.api.nvidia.com/v1 \
+ *        --key nvapi-xxx  moonshotai/kimi-k2.6  z-ai/glm-5.2
+ *
  * الناتج: دقة (عدد الحالات جوه الهامش المقبول) + متوسط الخطأ + الزمن + التوكنز.
- * حط الفايز في GEMINI_MODEL.
+ * حط الفايز في GEMINI_MODEL أو FALLBACK_AI_MODEL.
  */
 
-const KEY = process.env.GEMINI_API_KEY;
+const argv = process.argv.slice(2);
+function takeFlag(name) {
+  const i = argv.indexOf(name);
+  if (i === -1) return null;
+  const [, value] = argv.splice(i, 2);
+  return value;
+}
+
+const OPENAI_BASE = takeFlag('--openai');
+const CLI_KEY = takeFlag('--key');
+const KEY = CLI_KEY || (OPENAI_BASE ? process.env.FALLBACK_AI_API_KEY : process.env.GEMINI_API_KEY);
+
 if (!KEY) {
-  console.error('محتاج GEMINI_API_KEY');
+  console.error(OPENAI_BASE ? 'محتاج --key أو FALLBACK_AI_API_KEY' : 'محتاج GEMINI_API_KEY');
   process.exit(1);
 }
 
@@ -104,29 +120,86 @@ const prompt = [
     `### سؤال ${i + 1}\nquestionId: ${id}\nmaxScore: ${max}\nنص السؤال:\n${label}\nتعليمات التقييم (rubric):\n${rubric}\nإجابة المتقدمة:\n"""\n${answer}\n"""`),
 ].join('\n\n');
 
+/** بعض الموديلات بتغلّف الـJSON في ```json أو بتسبقه بكلام — بنستخرجه. */
+function extractJson(text) {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : text;
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error('مفيش JSON في الرد');
+  return JSON.parse(body.slice(start, end + 1));
+}
+
+async function callGemini(model) {
+  const res = await fetch(ENDPOINT(model), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: SCHEMA,
+      },
+    }),
+    signal: AbortSignal.timeout(180000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text()).slice(0, 140)}`);
+  const json = await res.json();
+  return {
+    text: json.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || '',
+    tokens: json.usageMetadata?.totalTokenCount,
+  };
+}
+
+async function callOpenAiCompatible(model, jsonMode = true) {
+  const body = {
+    model,
+    temperature: 0,
+    max_tokens: 4096,
+    messages: [
+      {
+        role: 'system',
+        content: `${SYSTEM}\n\nالشكل المطلوب: {"results":[{"questionId":"...","score":0,"reason":"..."}]}`,
+      },
+      { role: 'user', content: prompt },
+    ],
+  };
+  if (jsonMode) body.response_format = { type: 'json_object' };
+
+  const res = await fetch(`${OPENAI_BASE.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(180000),
+  });
+
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 200);
+    // موديلات كتير مش بتدعم response_format — بنعيد من غيره
+    if (jsonMode && (res.status === 400 || res.status === 422)) {
+      return callOpenAiCompatible(model, false);
+    }
+    throw new Error(`HTTP ${res.status} ${detail}`);
+  }
+
+  const json = await res.json();
+  return {
+    text: json.choices?.[0]?.message?.content || '',
+    tokens: json.usage?.total_tokens,
+    jsonMode,
+  };
+}
+
 async function run(model) {
   const started = Date.now();
   try {
-    const res = await fetch(ENDPOINT(model), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0,
-          responseMimeType: 'application/json',
-          responseSchema: SCHEMA,
-        },
-      }),
-      signal: AbortSignal.timeout(120000),
-    });
+    const { text, tokens, jsonMode } = OPENAI_BASE
+      ? await callOpenAiCompatible(model)
+      : await callGemini(model);
     const ms = Date.now() - started;
-    if (!res.ok) return { model, ms, error: `HTTP ${res.status} ${(await res.text()).slice(0, 140)}` };
-
-    const json = await res.json();
-    const text = json.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || '';
-    const byId = new Map(JSON.parse(text).results.map((r) => [r.questionId, r]));
+    const byId = new Map(extractJson(text).results.map((r) => [r.questionId, r]));
 
     let totalError = 0;
     let within = 0;
@@ -151,14 +224,15 @@ async function run(model) {
       within,
       of: CASES.length,
       rows,
-      tokens: json.usageMetadata?.totalTokenCount,
+      tokens,
+      jsonMode,
     };
   } catch (error) {
-    return { model, ms: Date.now() - started, error: String(error.message).slice(0, 140) };
+    return { model, ms: Date.now() - started, error: String(error.message).slice(0, 180) };
   }
 }
 
-const models = process.argv.slice(2);
+const models = argv;
 if (models.length === 0) {
   console.error('اكتب اسم موديل أو أكتر، مثال: node scripts/bench-scoring.mjs gemini-3.6-flash gemini-2.5-flash');
   process.exit(1);
@@ -173,7 +247,7 @@ for (const model of models) {
     continue;
   }
   console.log(
-    `\n✅ ${model.padEnd(26)} ${String(result.ms).padStart(6)}ms  دقة ${result.within}/${result.of}  متوسط الخطأ ${result.mae}  توكنز ${result.tokens ?? '?'}`
+    `\n✅ ${model.padEnd(34)} ${String(result.ms).padStart(6)}ms  دقة ${result.within}/${result.of}  متوسط الخطأ ${result.mae}  توكنز ${result.tokens ?? '?'}${result.jsonMode === false ? '  (من غير json mode)' : ''}`
   );
   for (const [id, expected, got, ok] of result.rows) {
     console.log(`     ${ok === 'ok' ? '·' : '⚠'} ${id.padEnd(12)} صح=${expected}  الموديل=${got}`);
@@ -184,6 +258,6 @@ const ok = results.filter((r) => !r.error);
 if (ok.length > 0) {
   console.log('\n\n=========== الترتيب ===========');
   ok.sort((a, b) => b.within - a.within || a.mae - b.mae || a.ms - b.ms).forEach((r, i) =>
-    console.log(`${i + 1}. ${r.model.padEnd(26)} دقة ${r.within}/${r.of}  خطأ ${r.mae}  ${r.ms}ms`)
+    console.log(`${i + 1}. ${r.model.padEnd(34)} دقة ${r.within}/${r.of}  خطأ ${r.mae}  ${r.ms}ms`)
   );
 }
