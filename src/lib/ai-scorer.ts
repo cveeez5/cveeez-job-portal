@@ -1,11 +1,16 @@
 // src/lib/ai-scorer.ts
 // تقييم الأسئلة المفتوحة بالذكاء الاصطناعي.
 //
-// الواجهة (AiScorer) متجرّدة عن المزود عن قصد: دلوقتي Gemini، ولو اتغيّر المزود
-// بعدين مش هيتغير أي حاجة في محرك التقييم (scoring-v2.ts) ولا في الـAPI.
+// الواجهة (AiScorer) متجرّدة عن المزود عن قصد، وجواها سلسلة محاولات مرتّبة:
+// لو المحاولة وقعت (حصة خلصت / مفتاح متحظر / السيرفر واقع / timeout) بننتقل
+// للي بعدها أوتوماتيك. لو كلهم وقعوا بنرجع لتقييم محلي تقريبي (heuristic)
+// والطلب بيتعلّم needsRescore عشان الأدمن يعيد التقييم بزرار.
 //
-// لو مفيش GEMINI_API_KEY أو الـcall فشلت/اتأخرت → بنرجع لتقييم محلي تقريبي
-// (heuristic) والطلب بيتعلّم needsRescore عشان الأدمن يعيد التقييم بزرار.
+// ترتيب السلسلة بيتبني من متغيرات البيئة (تفاصيلها في .env.example):
+//   1. GEMINI_API_KEY   + GEMINI_MODEL           (الأساسي)
+//   2. GEMINI_API_KEY   + GEMINI_MODEL_FALLBACK  (نفس المفتاح، موديل أرخص)
+//   3. GEMINI_API_KEY_2 + GEMINI_MODEL           (مفتاح جيمناي تاني)
+//   4. FALLBACK_AI_*                             (أي مزود متوافق مع OpenAI)
 
 import { GoogleGenAI, Type } from '@google/genai';
 
@@ -27,11 +32,13 @@ export interface AiScoreItem {
 
 export interface AiScoreOutcome {
   scores: Record<string, AiScoreItem>;
-  provider: 'gemini' | 'heuristic';
+  provider: 'gemini' | 'openai-compatible' | 'heuristic';
   model?: string;
   /** true = التقييم تقريبي ومحتاج إعادة بالـAI. */
   needsRescore: boolean;
   error?: string;
+  /** المحاولات اللي وقعت قبل ما ينجح — بتبان للأدمن عشان يعرف إن في مفتاح واقع. */
+  attempts?: string[];
 }
 
 export interface AiScorer {
@@ -40,9 +47,11 @@ export interface AiScorer {
   score(items: AiScoreRequest[]): Promise<AiScoreOutcome>;
 }
 
+const DEFAULT_TIMEOUT_MS = 25_000;
+
 // ===================== تقييم محلي تقريبي (fallback) =====================
 // مش بديل عن الـAI — بيقيس الاكتمال والتنظيم بس (طول + إشارات بنية).
-// موجود عشان الطلب ميضيعش لو الـAI مش متاح.
+// موجود عشان الطلب ميضيعش لو كل المزودين وقعوا.
 
 const LIST_MARKER = /(^|\n)\s*(\(?[0-9٠-٩]{1,2}[\).\-–]|[-•*])\s+/;
 const SENTENCE_SPLIT = /[.!؟?\n]+/;
@@ -80,11 +89,7 @@ export function heuristicScore(items: AiScoreRequest[]): AiScoreOutcome {
   return { scores, provider: 'heuristic', needsRescore: true };
 }
 
-// ===================== مزود Gemini =====================
-
-const DEFAULT_MODEL = 'gemini-2.5-flash';
-const DEFAULT_TIMEOUT_MS = 25_000;
-
+// ===================== البرومبت المشترك =====================
 const SYSTEM_INSTRUCTION = `أنت مقيّم توظيف محترف بيقيّم إجابات متقدمات لوظيفة "مودريتور خدمة عملاء ومبيعات بالشات" في شركة مصرية بتشتغل في كتابة السير الذاتية.
 
 قواعد التقييم:
@@ -99,7 +104,71 @@ const SYSTEM_INSTRUCTION = `أنت مقيّم توظيف محترف بيقيّم
 
 رجّع JSON بس، من غير أي كلام زيادة.`;
 
-const RESPONSE_SCHEMA = {
+function buildPrompt(items: AiScoreRequest[]): string {
+  const blocks = items.map((item, i) =>
+    [
+      `### سؤال ${i + 1}`,
+      `questionId: ${item.questionId}`,
+      `maxScore: ${item.maxScore}`,
+      `نص السؤال:`,
+      item.label,
+      `تعليمات التقييم (rubric):`,
+      item.rubric,
+      `إجابة المتقدمة:`,
+      '"""',
+      item.answer.trim() || '(مفيش إجابة)',
+      '"""',
+    ].join('\n')
+  );
+
+  return [
+    `قيّم الإجابات دي. عدد الأسئلة: ${items.length}.`,
+    'رجّع عنصر واحد لكل سؤال في مصفوفة results بنفس الـquestionId.',
+    '',
+    ...blocks,
+  ].join('\n\n');
+}
+
+interface RawResult {
+  questionId?: string;
+  score?: number;
+  reason?: string;
+}
+
+/** بنقصّ كل درجة على مدى سؤالها مهما رجّع الموديل، وبنرجّع اللي نقص. */
+function collectScores(
+  items: AiScoreRequest[],
+  results: RawResult[]
+): { scores: Record<string, AiScoreItem>; missing: AiScoreRequest[] } {
+  const byId = new Map(results.filter((r) => r.questionId).map((r) => [r.questionId!, r]));
+  const scores: Record<string, AiScoreItem> = {};
+  const missing: AiScoreRequest[] = [];
+
+  for (const item of items) {
+    const hit = byId.get(item.questionId);
+    if (!hit || typeof hit.score !== 'number' || !isFinite(hit.score)) {
+      missing.push(item);
+      continue;
+    }
+    const clamped = Math.max(0, Math.min(item.maxScore, hit.score));
+    scores[item.questionId] = {
+      score: Math.round(clamped * 10) / 10,
+      reason: (hit.reason || '').trim().slice(0, 200),
+    };
+  }
+
+  return { scores, missing };
+}
+
+// ===================== محاولة واحدة في السلسلة =====================
+interface Attempt {
+  label: string;
+  provider: 'gemini' | 'openai-compatible';
+  model: string;
+  run(items: AiScoreRequest[], signal: AbortSignal): Promise<RawResult[]>;
+}
+
+const GEMINI_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     results: {
@@ -118,132 +187,197 @@ const RESPONSE_SCHEMA = {
   required: ['results'],
 };
 
-function buildPrompt(items: AiScoreRequest[]): string {
-  const blocks = items.map((item, i) => {
-    return [
-      `### سؤال ${i + 1}`,
-      `questionId: ${item.questionId}`,
-      `maxScore: ${item.maxScore}`,
-      `نص السؤال:`,
-      item.label,
-      `تعليمات التقييم (rubric):`,
-      item.rubric,
-      `إجابة المتقدمة:`,
-      '"""',
-      item.answer.trim() || '(مفيش إجابة)',
-      '"""',
-    ].join('\n');
-  });
-
-  return [
-    `قيّم الإجابات دي. عدد الأسئلة: ${items.length}.`,
-    'رجّع عنصر واحد لكل سؤال في مصفوفة results بنفس الـquestionId.',
-    '',
-    ...blocks,
-  ].join('\n\n');
-}
-
-class GeminiScorer implements AiScorer {
-  readonly name = 'gemini';
-
-  private get apiKey(): string | undefined {
-    return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || undefined;
-  }
-
-  private get model(): string {
-    return process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  }
-
-  isAvailable(): boolean {
-    return !!this.apiKey;
-  }
-
-  async score(items: AiScoreRequest[]): Promise<AiScoreOutcome> {
-    if (items.length === 0) {
-      return { scores: {}, provider: 'gemini', model: this.model, needsRescore: false };
-    }
-
-    const apiKey = this.apiKey;
-    if (!apiKey) {
-      return { ...heuristicScore(items), error: 'GEMINI_API_KEY مش موجود' };
-    }
-
-    const timeoutMs = Number(process.env.GEMINI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
+function geminiAttempt(label: string, apiKey: string, model: string): Attempt {
+  return {
+    label,
+    provider: 'gemini',
+    model,
+    async run(items, signal) {
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: this.model,
+        model,
         contents: buildPrompt(items),
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
           temperature: 0,
           responseMimeType: 'application/json',
-          responseSchema: RESPONSE_SCHEMA,
-          abortSignal: controller.signal,
+          responseSchema: GEMINI_SCHEMA,
+          abortSignal: signal,
         },
       });
-
       const raw = response.text;
       if (!raw) throw new Error('رد فاضي من Gemini');
+      return (JSON.parse(raw) as { results?: RawResult[] }).results || [];
+    },
+  };
+}
 
-      const parsed = JSON.parse(raw) as {
-        results?: Array<{ questionId?: string; score?: number; reason?: string }>;
-      };
-      const results = parsed.results || [];
+/**
+ * أي مزود بواجهة متوافقة مع OpenAI (OpenAI / OpenRouter / Groq / DeepSeek /
+ * Together …) — كلهم بيقبلوا نفس /chat/completions فمحتاجين base URL وموديل بس.
+ */
+function openAiCompatibleAttempt(
+  label: string,
+  apiKey: string,
+  baseUrl: string,
+  model: string
+): Attempt {
+  return {
+    label,
+    provider: 'openai-compatible',
+    model,
+    async run(items, signal) {
+      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'system',
+              content: `${SYSTEM_INSTRUCTION}\n\nالشكل المطلوب: {"results":[{"questionId":"...","score":0,"reason":"..."}]}`,
+            },
+            { role: 'user', content: buildPrompt(items) },
+          ],
+        }),
+        signal,
+      });
 
-      const byId = new Map(results.filter((r) => r.questionId).map((r) => [r.questionId!, r]));
-
-      const scores: Record<string, AiScoreItem> = {};
-      const missing: AiScoreRequest[] = [];
-
-      for (const item of items) {
-        const hit = byId.get(item.questionId);
-        if (!hit || typeof hit.score !== 'number' || !isFinite(hit.score)) {
-          missing.push(item);
-          continue;
-        }
-        // بنقصّ الدرجة على مدى السؤال مهما رجّع الموديل
-        const clamped = Math.max(0, Math.min(item.maxScore, hit.score));
-        scores[item.questionId] = {
-          score: Math.round(clamped * 10) / 10,
-          reason: (hit.reason || '').trim().slice(0, 200),
-        };
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 160)}`);
       }
 
-      // أي سؤال الموديل نساه بياخد التقييم التقريبي بدل ما يضيع
-      if (missing.length > 0) {
-        const fallback = heuristicScore(missing);
-        Object.assign(scores, fallback.scores);
-      }
-
-      return {
-        scores,
-        provider: 'gemini',
-        model: this.model,
-        needsRescore: missing.length > 0,
-        error: missing.length > 0 ? `${missing.length} سؤال رجعوا من غير درجة` : undefined,
+      const json = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
       };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error('[ai-scorer] Gemini failed:', message);
-      return { ...heuristicScore(items), error: message };
-    } finally {
-      clearTimeout(timer);
+      const raw = json.choices?.[0]?.message?.content;
+      if (!raw) throw new Error('رد فاضي من المزود الاحتياطي');
+      return (JSON.parse(raw) as { results?: RawResult[] }).results || [];
+    },
+  };
+}
+
+// ===================== بناء السلسلة من متغيرات البيئة =====================
+const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
+const DEFAULT_GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash';
+
+function buildChain(): Attempt[] {
+  const chain: Attempt[] = [];
+
+  const key1 = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const key2 = process.env.GEMINI_API_KEY_2;
+  const model = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+  const fallbackModel = process.env.GEMINI_MODEL_FALLBACK || DEFAULT_GEMINI_FALLBACK_MODEL;
+
+  if (key1) {
+    chain.push(geminiAttempt(`gemini:${model}`, key1, model));
+    // نفس المفتاح بموديل تاني — بيغطي حالة إن الحصة خلصت على موديل واحد بس
+    if (fallbackModel && fallbackModel !== model) {
+      chain.push(geminiAttempt(`gemini:${fallbackModel}`, key1, fallbackModel));
     }
+  }
+
+  if (key2) {
+    chain.push(geminiAttempt(`gemini2:${model}`, key2, model));
+  }
+
+  const fbKey = process.env.FALLBACK_AI_API_KEY;
+  const fbUrl = process.env.FALLBACK_AI_BASE_URL;
+  const fbModel = process.env.FALLBACK_AI_MODEL;
+  if (fbKey && fbUrl && fbModel) {
+    chain.push(openAiCompatibleAttempt(`fallback:${fbModel}`, fbKey, fbUrl, fbModel));
+  }
+
+  return chain;
+}
+
+// ===================== المنسّق =====================
+class ChainedScorer implements AiScorer {
+  readonly name = 'chained';
+
+  isAvailable(): boolean {
+    return buildChain().length > 0;
+  }
+
+  async score(items: AiScoreRequest[]): Promise<AiScoreOutcome> {
+    const chain = buildChain();
+
+    if (items.length === 0) {
+      return {
+        scores: {},
+        provider: chain[0]?.provider ?? 'heuristic',
+        model: chain[0]?.model,
+        needsRescore: false,
+      };
+    }
+
+    if (chain.length === 0) {
+      return { ...heuristicScore(items), error: 'مفيش أي مفتاح ذكاء اصطناعي متظبط' };
+    }
+
+    const timeoutMs = Number(process.env.AI_TIMEOUT_MS || process.env.GEMINI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+    const failures: string[] = [];
+
+    for (const attempt of chain) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const results = await attempt.run(items, controller.signal);
+        const { scores, missing } = collectScores(items, results);
+
+        // لو الموديل نسي كل حاجة نعتبرها محاولة فاشلة ونجرب اللي بعده
+        if (missing.length === items.length) {
+          throw new Error('كل الأسئلة رجعت من غير درجة');
+        }
+
+        // أي سؤال ناقص بياخد التقييم التقريبي بدل ما يضيع
+        if (missing.length > 0) {
+          Object.assign(scores, heuristicScore(missing).scores);
+        }
+
+        return {
+          scores,
+          provider: attempt.provider,
+          model: attempt.model,
+          needsRescore: missing.length > 0,
+          error: missing.length > 0 ? `${missing.length} سؤال رجعوا من غير درجة` : undefined,
+          attempts: failures.length > 0 ? failures : undefined,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[ai-scorer] ${attempt.label} فشل:`, message);
+        failures.push(`${attempt.label}: ${message.slice(0, 120)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // كل المزودين وقعوا
+    return {
+      ...heuristicScore(items),
+      error: failures.join(' | ').slice(0, 500),
+      attempts: failures,
+    };
   }
 }
 
 let cached: AiScorer | null = null;
 
-/** المزود الحالي — سطر واحد يتغير لو المزود اتبدّل. */
 export function getAiScorer(): AiScorer {
-  if (!cached) cached = new GeminiScorer();
+  if (!cached) cached = new ChainedScorer();
   return cached;
 }
 
 export function isAiScoringAvailable(): boolean {
   return getAiScorer().isAvailable();
+}
+
+/** أسماء المحاولات المتظبطة — للتشخيص من الأدمن. */
+export function aiChainLabels(): string[] {
+  return buildChain().map((a) => a.label);
 }

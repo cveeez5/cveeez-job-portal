@@ -739,6 +739,16 @@ function V2ScoreCard({
           ? '⚠️ درجات الأسئلة المفتوحة تقريبية دلوقتي — اضغطي «إعادة تقييم» بعد ما مفتاح الذكاء الاصطناعي يتظبط.'
           : `الأسئلة المفتوحة اتقيّمت بـ${breakdown?.model || 'الذكاء الاصطناعي'} — الدرجة مساعِدة مش بديل عن مراجعتك.`}
       </p>
+
+      {/* سبب فشل الذكاء الاصطناعي — عشان نعرف أنهي مفتاح واقع من غير ما نفتح اللوجز */}
+      {breakdown?.error && (
+        <p
+          className="text-[10px] text-white/20 mt-2 leading-relaxed break-words"
+          title={breakdown.error}
+        >
+          {breakdown.error}
+        </p>
+      )}
     </div>
   );
 }
