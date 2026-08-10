@@ -299,13 +299,22 @@ function openAiCompatibleAttempt(
 const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
 const DEFAULT_GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash';
 
+/**
+ * قراءة متغير بيئة منظّفة. مهم: لوحات التحكم وأدوات الـCLI بتسيب مسافات أو
+ * سطر جديد في آخر القيمة من غير ما تحس — ولو ده حصل في base URL بيبقى الرابط
+ * مكسور والرد 404 من غير سبب واضح.
+ */
+function env(name: string): string | undefined {
+  return process.env[name]?.trim() || undefined;
+}
+
 function buildChain(): Attempt[] {
   const chain: Attempt[] = [];
 
-  const key1 = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  const key2 = process.env.GEMINI_API_KEY_2;
-  const model = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
-  const fallbackModel = process.env.GEMINI_MODEL_FALLBACK || DEFAULT_GEMINI_FALLBACK_MODEL;
+  const key1 = env('GEMINI_API_KEY') || env('GOOGLE_API_KEY');
+  const key2 = env('GEMINI_API_KEY_2');
+  const model = env('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL;
+  const fallbackModel = env('GEMINI_MODEL_FALLBACK') || DEFAULT_GEMINI_FALLBACK_MODEL;
 
   if (key1) {
     chain.push(geminiAttempt(`gemini:${model}`, key1, model));
@@ -319,10 +328,10 @@ function buildChain(): Attempt[] {
     chain.push(geminiAttempt(`gemini2:${model}`, key2, model));
   }
 
-  const fbKey = process.env.FALLBACK_AI_API_KEY;
-  const fbUrl = process.env.FALLBACK_AI_BASE_URL;
-  const fbModel = process.env.FALLBACK_AI_MODEL;
-  const fbModel2 = process.env.FALLBACK_AI_MODEL_2;
+  const fbKey = env('FALLBACK_AI_API_KEY');
+  const fbUrl = env('FALLBACK_AI_BASE_URL');
+  const fbModel = env('FALLBACK_AI_MODEL');
+  const fbModel2 = env('FALLBACK_AI_MODEL_2');
 
   if (fbKey && fbUrl && fbModel) {
     chain.push(openAiCompatibleAttempt(`fallback:${fbModel}`, fbKey, fbUrl, fbModel));
@@ -359,7 +368,7 @@ class ChainedScorer implements AiScorer {
       return { ...heuristicScore(items), error: 'مفيش أي مفتاح ذكاء اصطناعي متظبط' };
     }
 
-    const timeoutMs = Number(process.env.AI_TIMEOUT_MS || process.env.GEMINI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+    const timeoutMs = Number(env('AI_TIMEOUT_MS') || env('GEMINI_TIMEOUT_MS')) || DEFAULT_TIMEOUT_MS;
     const failures: string[] = [];
 
     for (const attempt of chain) {
