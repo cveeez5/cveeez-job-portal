@@ -51,6 +51,7 @@ export default function ModeratorFormV2() {
   const [submitError, setSubmitError] = useState('');
 
   const [hydrated, setHydrated] = useState(false);
+  const [finished, setFinished] = useState(false);
 
   // ===== استرجاع التقدم المحفوظ (لو الصفحة اتقفلت في النص) =====
   useEffect(() => {
@@ -68,8 +69,11 @@ export default function ModeratorFormV2() {
     () => ({ answers, meta, step: currentStep }),
     [answers, meta, currentStep]
   );
-  // مش بنحفظ قبل ما نخلص استرجاع — عشان الحالة الفاضية متمسحش المحفوظ
-  useFormAutosave(STORAGE_KEY, autosaveData, hydrated);
+  // بنوقف الحفظ في 3 حالات:
+  //   - قبل ما نخلص استرجاع، عشان الحالة الفاضية متمسحش المحفوظ
+  //   - أثناء الإرسال وبعد ما يتم، عشان الحفظ المؤجل ميرجّعش البيانات بعد ما
+  //     نمسحها (بيحصل لما الريكوست يخلص أسرع من مدة التأجيل)
+  useFormAutosave(STORAGE_KEY, autosaveData, hydrated && !isSubmitting && !finished);
 
   const steps = MODERATOR_V2_UI_STEPS;
   const step = steps[currentStep];
@@ -147,6 +151,9 @@ export default function ModeratorFormV2() {
           return;
         }
 
+        // الترتيب مهم: بنقفل الحفظ الأول وبعدين نمسح، عشان مفيش حفظ مؤجل
+        // يقدر يرجّع البيانات بعد المسح
+        setFinished(true);
         clearSavedFormData(STORAGE_KEY);
 
         // السيرفر هو اللي بيحدد الاستبعاد فعلياً — بنمشي على رده
@@ -190,6 +197,7 @@ export default function ModeratorFormV2() {
 
   const restart = useCallback(() => {
     clearSavedFormData(STORAGE_KEY);
+    setFinished(false);
     setAnswers({});
     setMeta({});
     setErrors({});
