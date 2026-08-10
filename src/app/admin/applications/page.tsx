@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { JOBS } from '@/lib/constants';
 import { scoreTier } from '@/lib/scoring';
+import { v2GradeStyle } from '@/lib/scoring-v2';
 
 interface Application {
   id: string;
@@ -35,6 +36,9 @@ interface Application {
   _count: { answers: number };
   score?: number | null;
   scoreFlags?: number;
+  formVersion?: number;
+  grade?: string | null;
+  knockoutReason?: string | null;
 }
 
 interface Pagination {
@@ -50,6 +54,7 @@ const statusColors: Record<string, string> = {
   ACCEPTED: 'bg-green-500/20 text-green-400',
   REJECTED: 'bg-red-500/20 text-red-400',
   SHORTLISTED: 'bg-purple-500/20 text-purple-400',
+  REJECTED_AUTO: 'bg-red-500/10 text-red-300',
 };
 
 const statusLabels: Record<string, string> = {
@@ -58,6 +63,7 @@ const statusLabels: Record<string, string> = {
   ACCEPTED: 'مقبول',
   REJECTED: 'مرفوض',
   SHORTLISTED: 'قائمة مختصرة',
+  REJECTED_AUTO: 'مستبعد تلقائياً',
 };
 
 export default function AdminApplicationsPage() {
@@ -70,7 +76,8 @@ export default function AdminApplicationsPage() {
   const [scoreBucket, setScoreBucket] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [sortByScore, setSortByScore] = useState(false);
+  // الترتيب الافتراضي بالدرجة تنازلياً — الأعلى درجة أول القايمة
+  const [sortByScore, setSortByScore] = useState(true);
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
@@ -101,7 +108,7 @@ export default function AdminApplicationsPage() {
     setScoreBucket('');
     setDateFrom('');
     setDateTo('');
-    setSortByScore(false);
+    setSortByScore(true);
     setPage(1);
   };
 
@@ -278,10 +285,18 @@ export default function AdminApplicationsPage() {
               }}
             >
               <option value="">كل الدرجات</option>
-              <option value="excellent">ممتاز (80%+)</option>
-              <option value="good">جيد جداً (60–79%)</option>
-              <option value="mid">متوسط (40–59%)</option>
-              <option value="low">ضعيف (أقل من 40%)</option>
+              <optgroup label="تصنيف فورم المودريتور">
+                <option value="gradeA">A — مرشحة قوية (75+)</option>
+                <option value="gradeB">B — قائمة انتظار (60–74)</option>
+                <option value="gradeC">C — أقل من 60</option>
+                <option value="knockout">🚫 مستبعدة تلقائياً</option>
+              </optgroup>
+              <optgroup label="شرايح الدرجة">
+                <option value="excellent">ممتاز (80%+)</option>
+                <option value="good">جيد جداً (60–79%)</option>
+                <option value="mid">متوسط (40–59%)</option>
+                <option value="low">ضعيف (أقل من 40%)</option>
+              </optgroup>
               <option value="flagged">⚠️ فيها تنبيهات</option>
               <option value="unscored">بدون تقييم (قديمة)</option>
             </select>
@@ -388,7 +403,7 @@ export default function AdminApplicationsPage() {
                         </span>
                       </td>
                       <td className="p-4">
-                        <ScoreBadge score={app.score} flags={app.scoreFlags} />
+                        <ScoreBadge app={app} />
                       </td>
                       <td className="p-4">
                         <span
@@ -442,7 +457,7 @@ export default function AdminApplicationsPage() {
                     >
                       {statusLabels[app.status] || app.status}
                     </span>
-                    <ScoreBadge score={app.score} flags={app.scoreFlags} />
+                    <ScoreBadge app={app} />
                   </div>
                 </div>
                 <div className="flex items-center justify-between text-xs text-white/40">
@@ -633,18 +648,44 @@ function Paginator({
   );
 }
 
-function ScoreBadge({ score, flags }: { score?: number | null; flags?: number }) {
+function ScoreBadge({ app }: { app: Application }) {
+  const { score, scoreFlags: flags, grade, knockoutReason } = app;
+
+  // طلبات v2 المستبعدة مفيش ليها درجة أصلاً
+  if (knockoutReason) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full bg-red-500/10 text-red-300"
+        title={knockoutReason}
+      >
+        🚫 مستبعدة
+      </span>
+    );
+  }
+
   if (score === null || score === undefined) {
     return <span className="text-xs text-white/20">—</span>;
   }
-  const tier = scoreTier(score);
+
+  // v2: التصنيف A/B/C هو المؤشر الأساسي. v1: شرايح الدرجة زي ما كانت.
+  const style = grade ? v2GradeStyle(grade) : scoreTier(score);
+  const title = grade
+    ? `التصنيف ${grade}${flags ? ` • ${flags} تنبيه` : ''}`
+    : `${scoreTier(score).label}${flags ? ` • ${flags} تنبيه` : ''}`;
+
   return (
     <span
-      className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${tier.color}`}
-      title={`${tier.label}${flags ? ` • ${flags} تنبيه` : ''}`}
+      className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${style.color}`}
+      title={title}
     >
-      {score}%
-      {!!flags && flags > 0 && <span className="text-red-400" title={`${flags} تنبيه`}>⚠️</span>}
+      {grade && <span className="opacity-80">{grade}</span>}
+      {score}
+      {!grade && '%'}
+      {!!flags && flags > 0 && (
+        <span className="text-yellow-400" title={`${flags} تنبيه`}>
+          ⚠️
+        </span>
+      )}
     </span>
   );
 }

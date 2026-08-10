@@ -51,7 +51,8 @@ export type ApplicationStatus =
   | 'REVIEWED'
   | 'ACCEPTED'
   | 'REJECTED'
-  | 'SHORTLISTED';
+  | 'SHORTLISTED'
+  | 'REJECTED_AUTO';
 
 export const STATUS_LABELS: Record<ApplicationStatus, { label: string; color: string }> = {
   PENDING: { label: 'قيد المراجعة', color: 'bg-yellow-500/20 text-yellow-400' },
@@ -59,4 +60,5 @@ export const STATUS_LABELS: Record<ApplicationStatus, { label: string; color: st
   ACCEPTED: { label: 'مقبول', color: 'bg-green-500/20 text-green-400' },
   REJECTED: { label: 'مرفوض', color: 'bg-red-500/20 text-red-400' },
   SHORTLISTED: { label: 'في القائمة المختصرة', color: 'bg-purple-500/20 text-purple-400' },
+  REJECTED_AUTO: { label: 'مستبعد تلقائياً', color: 'bg-red-500/10 text-red-300' },
 };

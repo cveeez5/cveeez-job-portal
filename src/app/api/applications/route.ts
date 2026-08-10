@@ -1,9 +1,26 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { uploadToR2 } from '@/lib/cloudflare-r2';
 import { scoreApplication } from '@/lib/scoring';
+import { sanitizeAnswerMeta } from '@/lib/scoring-v2';
+import {
+  MODERATOR_V2_REJECTION_MESSAGE,
+  MODERATOR_FORM_VERSION,
+} from '@/lib/moderator-v2';
+import {
+  evaluateFast,
+  evaluationToColumns,
+  mapV2AnswersToColumns,
+  findMissingRequired,
+  rescoreApplication,
+} from '@/lib/moderator-v2-service';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+/** الوظيفة الوحيدة اللي شغالة بفورم v2 دلوقتي. */
+const V2_JOB_SLUG = 'moderator';
 
 // POST /api/applications - Create new application
 export async function POST(request: NextRequest) {
@@ -19,13 +36,10 @@ export async function POST(request: NextRequest) {
     const linkedinUrl = formData.get('linkedinUrl') as string;
     const answersJson = formData.get('answers') as string;
     const cvFile = formData.get('cv') as File | null;
+    const formVersion = parseInt((formData.get('formVersion') as string) || '1', 10) || 1;
 
-    // Validate required fields
-    if (!jobSlug || !name || !email) {
-      return NextResponse.json(
-        { error: 'الاسم والإيميل والوظيفة مطلوبين' },
-        { status: 400 }
-      );
+    if (!jobSlug) {
+      return NextResponse.json({ error: 'الوظيفة مطلوبة' }, { status: 400 });
     }
 
     // Find job by slug
@@ -46,7 +60,9 @@ export async function POST(request: NextRequest) {
       try {
         const answers = JSON.parse(answersJson) as Record<string, string>;
         const filtered = Object.fromEntries(
-          Object.entries(answers).filter(([, v]) => v.trim() !== '')
+          Object.entries(answers)
+            .filter(([, v]) => typeof v === 'string' && v.trim() !== '')
+            .map(([k, v]) => [k, v.trim()])
         );
         if (Object.keys(filtered).length > 0) {
           parsedAnswers = filtered;
@@ -54,6 +70,23 @@ export async function POST(request: NextRequest) {
       } catch {
         console.error('Error parsing answers JSON');
       }
+    }
+
+    // ===================== مسار فورم المودريتور v2 =====================
+    if (formVersion >= MODERATOR_FORM_VERSION && jobSlug === V2_JOB_SLUG) {
+      return await handleModeratorV2({
+        jobId: job.id,
+        answers: parsedAnswers || {},
+        answerMetaRaw: formData.get('answerMeta') as string | null,
+      });
+    }
+
+    // Validate required fields (الفورم القديم)
+    if (!name || !email) {
+      return NextResponse.json(
+        { error: 'الاسم والإيميل والوظيفة مطلوبين' },
+        { status: 400 }
+      );
     }
 
     // Create application with answers stored as JSON
@@ -103,6 +136,102 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * حفظ وتقييم طلب فورم المودريتور v2.
+ *
+ * الاستبعاد والدرجة بيتحسبوا هنا من الإجابات الخام — أي حاجة جاية من المتصفح
+ * (درجة / تصنيف / نتيجة استبعاد) بتتجاهَل تماماً عشان حد ميقدرش يعدّل الريكوست.
+ */
+async function handleModeratorV2({
+  jobId,
+  answers,
+  answerMetaRaw,
+}: {
+  jobId: string;
+  answers: Record<string, string>;
+  answerMetaRaw: string | null;
+}) {
+  const evaluation = evaluateFast(answers);
+  const columns = mapV2AnswersToColumns(answers);
+
+  // ===== استبعاد تلقائي: بنسجّل الطلب بالإجابات اللي وصلت ونقف =====
+  if (evaluation.knockout) {
+    const application = await prisma.application.create({
+      data: {
+        jobId,
+        formVersion: MODERATOR_FORM_VERSION,
+        status: 'REJECTED_AUTO',
+        // البوابة بتيجي قبل البيانات الشخصية، فممكن الاسم والإيميل يكونوا لسه فاضيين
+        name: columns.name,
+        email: columns.email,
+        phone: columns.phone,
+        city: columns.city,
+        yearsOfExperience: columns.yearsOfExperience,
+        answersJson: answers,
+        ...evaluationToColumns(evaluation),
+      },
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        id: application.id,
+        knockout: true,
+        message: MODERATOR_V2_REJECTION_MESSAGE,
+      },
+      { status: 201 }
+    );
+  }
+
+  // ===== التحقق من الأسئلة المطلوبة (بيتعاد على السيرفر) =====
+  const missing = findMissingRequired(answers);
+  if (missing.length > 0) {
+    return NextResponse.json(
+      { error: 'في أسئلة مطلوبة لسه فاضية', missing },
+      { status: 400 }
+    );
+  }
+
+  let answerMeta = null;
+  if (answerMetaRaw) {
+    try {
+      answerMeta = sanitizeAnswerMeta(JSON.parse(answerMetaRaw));
+    } catch {
+      console.error('Error parsing answerMeta JSON');
+    }
+  }
+
+  const application = await prisma.application.create({
+    data: {
+      jobId,
+      formVersion: MODERATOR_FORM_VERSION,
+      name: columns.name,
+      email: columns.email,
+      phone: columns.phone,
+      city: columns.city,
+      yearsOfExperience: columns.yearsOfExperience,
+      answersJson: answers,
+      answerMeta: (answerMeta ?? undefined) as Prisma.InputJsonValue | undefined,
+      ...evaluationToColumns(evaluation),
+    },
+  });
+
+  // الأسئلة المفتوحة بتتقيّم بالـAI بعد ما الرد يوصل للمتقدمة — عشان متستناش،
+  // ولو الـAI وقع الطلب محفوظ بالفعل بتقييم تقريبي وممكن يتعاد من الأدمن.
+  after(async () => {
+    try {
+      await rescoreApplication(application.id);
+    } catch (error) {
+      console.error('[moderator-v2] background rescore failed:', error);
+    }
+  });
+
+  return NextResponse.json(
+    { success: true, id: application.id, knockout: false },
+    { status: 201 }
+  );
 }
 
 // GET /api/applications - Get all applications (admin)
@@ -160,9 +289,26 @@ export async function GET(request: NextRequest) {
       _count: { select: { answers: true } },
     } as const;
 
-    // بنحسب الدرجة من answersJson + slug الوظيفة (الـ include بيرجّع كل الحقول القياسية)
-    // الطلبات القديمة (اللي مجاوبتش على أي سؤال متقيَّم) درجتها null عشان تظهر "—" مش 0%
-    const attachScore = <T extends { job: { slug: string }; answersJson: unknown }>(app: T) => {
+    // طلبات v2: الدرجة متخزّنة في الداتابيز (totalScore) وقت الإرسال.
+    // طلبات v1: الدرجة بتتحسب وقت العرض من answersJson زي ما كانت بالظبط.
+    // الطلبات القديمة اللي مجاوبتش على أي سؤال متقيَّم درجتها null عشان تظهر "—" مش 0%
+    const attachScore = <
+      T extends {
+        job: { slug: string };
+        answersJson: unknown;
+        formVersion: number;
+        totalScore: number | null;
+        grade: string | null;
+        flags: unknown;
+        knockoutReason: string | null;
+      },
+    >(
+      app: T
+    ) => {
+      if (app.formVersion >= 2) {
+        const v2Flags = Array.isArray(app.flags) ? app.flags.length : 0;
+        return { ...app, score: app.totalScore, scoreFlags: v2Flags };
+      }
       const s = scoreApplication(
         app.job.slug,
         app.answersJson as Record<string, string> | null
@@ -171,7 +317,12 @@ export async function GET(request: NextRequest) {
       return { ...app, score, scoreFlags: s.flags.length };
     };
 
-    const inBucket = (score: number | null, flags: number): boolean => {
+    const inBucket = (
+      score: number | null,
+      flags: number,
+      grade: string | null,
+      knockoutReason: string | null
+    ): boolean => {
       switch (scoreBucket) {
         case 'excellent':
           return score !== null && score >= 80;
@@ -181,10 +332,18 @@ export async function GET(request: NextRequest) {
           return score !== null && score >= 40 && score < 60;
         case 'low':
           return score !== null && score < 40;
+        case 'gradeA':
+          return grade === 'A';
+        case 'gradeB':
+          return grade === 'B';
+        case 'gradeC':
+          return grade === 'C';
+        case 'knockout':
+          return !!knockoutReason;
         case 'flagged':
           return flags > 0;
         case 'unscored':
-          return score === null;
+          return score === null && !knockoutReason;
         default:
           return true;
       }
@@ -200,7 +359,9 @@ export async function GET(request: NextRequest) {
       });
       let scored = all.map(attachScore);
       if (scoreBucket) {
-        scored = scored.filter((a) => inBucket(a.score, a.scoreFlags));
+        scored = scored.filter((a) =>
+          inBucket(a.score, a.scoreFlags, a.grade, a.knockoutReason)
+        );
       }
       // نرتّب بالدرجة (الأعلى أولاً) لو اتطلب الترتيب أو الفلترة بالدرجة
       scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));

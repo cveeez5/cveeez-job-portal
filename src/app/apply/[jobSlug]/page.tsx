@@ -10,8 +10,12 @@ import PersonalInfoStep from '@/components/forms/PersonalInfoStep';
 import ExperienceStep from '@/components/forms/ExperienceStep';
 import QuestionsStep from '@/components/forms/QuestionsStep';
 import ReviewStep from '@/components/forms/ReviewStep';
+import ModeratorFormV2 from '@/components/forms/v2/ModeratorFormV2';
 import { JOBS, JOB_QUESTIONS } from '@/lib/constants';
 import { FORM_STEPS } from '@/types';
+
+/** الوظيفة اللي اتنقلت لفورم v2. باقي الوظائف لسه على الفورم العام. */
+const V2_JOB_SLUG = 'moderator';
 
 const Background3D = dynamic(() => import('@/components/3d/Background3D'), {
   ssr: false,
@@ -36,6 +40,7 @@ export default function JobApplicationPage() {
 
   const job = JOBS.find((j) => j.id === jobSlug);
   const questions = JOB_QUESTIONS[jobSlug] || [];
+  const isV2 = jobSlug === V2_JOB_SLUG;
 
   const [currentStep, setCurrentStep] = useState(0);
   const [direction, setDirection] = useState(1);
@@ -187,28 +192,34 @@ export default function JobApplicationPage() {
             <p className="text-sm text-white/50">{job.description}</p>
           </motion.div>
 
-          {/* Step Indicator */}
-          <StepIndicator
-            steps={steps.map((s) => ({ title: s.title, icon: s.icon }))}
-            currentStep={currentStep}
-          />
+          {isV2 ? (
+            <ModeratorFormV2 />
+          ) : (
+            <>
+              {/* Step Indicator */}
+              <StepIndicator
+                steps={steps.map((s) => ({ title: s.title, icon: s.icon }))}
+                currentStep={currentStep}
+              />
 
-          {/* Form Steps */}
-          <div className="glass-card p-6 sm:p-8">
-            <AnimatePresence mode="wait" custom={direction}>
-              <motion.div
-                key={currentStep}
-                custom={direction}
-                variants={slideVariants}
-                initial="enter"
-                animate="center"
-                exit="exit"
-                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              >
-                {renderStep()}
-              </motion.div>
-            </AnimatePresence>
-          </div>
+              {/* Form Steps */}
+              <div className="glass-card p-6 sm:p-8">
+                <AnimatePresence mode="wait" custom={direction}>
+                  <motion.div
+                    key={currentStep}
+                    custom={direction}
+                    variants={slideVariants}
+                    initial="enter"
+                    animate="center"
+                    exit="exit"
+                    transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                  >
+                    {renderStep()}
+                  </motion.div>
+                </AnimatePresence>
+              </div>
+            </>
+          )}
         </div>
       </main>
     </>

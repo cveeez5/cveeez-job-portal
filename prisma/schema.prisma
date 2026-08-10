@@ -87,9 +87,30 @@ model Application {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
+  // ===== نظام التقييم (فورم المودريتور v2) =====
+  // الطلبات القديمة كلها formVersion = 1 والحقول دي فاضية عندها — بتتعرض زي ما هي.
+  /// 1 = الفورم القديم، 2 = فورم المودريتور الجديد بنظام الدرجات
+  formVersion Int @default(1)
+  /// الدرجة النهائية من 100 بعد الخصومات (null = الطلب مش متقيَّم آلياً)
+  totalScore Float?
+  /// درجة كل قسم: { experience: {earned, max}, worksample: {...}, ... }
+  scoreBreakdown Json?
+  /// الخصومات المطبّقة: [{ rule, points, reason }]
+  penalties Json?
+  /// ملاحظات للأدمن مش استبعاد: [{ questionId, label, note }]
+  flags Json?
+  /// A / B / C حسب thresholds
+  grade String?
+  /// سبب الاستبعاد التلقائي (null = مفيش استبعاد)
+  knockoutReason String?
+  /// مؤشرات النسخ لكل سؤال مفتوح: { [questionId]: { seconds, pasted, chars } }
+  answerMeta Json?
+
   job     Job      @relation(fields: [jobId], references: [id])
   answers Answer[]
   files   UploadedFile[]
+
+  @@index([totalScore])
 }
 
 enum ApplicationStatus {
@@ -98,6 +119,8 @@ enum ApplicationStatus {
   ACCEPTED
   REJECTED
   SHORTLISTED
+  /// استبعاد تلقائي من بوابة الفلترة (knockout)
+  REJECTED_AUTO
 }
 
 // ===================== الإجابات =====================

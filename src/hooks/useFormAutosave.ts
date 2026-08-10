@@ -3,12 +3,18 @@ import { useEffect, useRef, useCallback } from 'react';
 const STORAGE_PREFIX = 'cveeez_form_';
 const AUTOSAVE_DELAY = 1000; // 1 second debounce
 
-export function useFormAutosave<T>(key: string, data: T) {
+/**
+ * @param enabled خليها false لحد ما تخلص استرجاع البيانات المحفوظة، عشان
+ *                الحالة الابتدائية الفاضية متمسحش اللي كان متسجّل قبل كده.
+ */
+export function useFormAutosave<T>(key: string, data: T, enabled = true) {
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const storageKey = `${STORAGE_PREFIX}${key}`;
 
   // Save data with debounce
   useEffect(() => {
+    if (!enabled) return;
+
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }
@@ -27,7 +33,7 @@ export function useFormAutosave<T>(key: string, data: T) {
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [data, storageKey]);
+  }, [data, storageKey, enabled]);
 
   return null;
 }

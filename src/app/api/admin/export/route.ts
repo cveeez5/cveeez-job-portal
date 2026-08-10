@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import { prisma } from '@/lib/prisma';
 import { JOB_QUESTIONS } from '@/lib/constants';
 import { scoreApplication, hasScoring } from '@/lib/scoring';
+import { MODERATOR_V2_QUESTIONS, v2OptionLabel } from '@/lib/moderator-v2';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,15 @@ const STATUS_LABELS: Record<string, string> = {
   ACCEPTED: 'مقبول',
   REJECTED: 'مرفوض',
   SHORTLISTED: 'قائمة مختصرة',
+  REJECTED_AUTO: 'مستبعد تلقائياً',
 };
+
+/** أسئلة v2 بتتضاف كأعمدة لوحدها جنب أسئلة v1 عشان الطلبات القديمة تفضل مقروءة. */
+const V2_EXPORT_QUESTIONS = MODERATOR_V2_QUESTIONS.map((q) => ({
+  id: q.id,
+  text: q.label.replace(/\s+/g, ' ').trim(),
+  hasOptions: !!q.options,
+}));
 
 const EXPERIENCE_LABELS: Record<string, string> = {
   no_experience: 'بدون خبرة',
@@ -115,11 +124,17 @@ export async function GET(request: NextRequest) {
       });
 
       // التقييم الآلي (لو الوظيفة عندها نظام تقييم): عمود درجة + ترتيب تنازلي
+      // طلبات v2 درجتها متخزّنة (totalScore)، وطلبات v1 بتتحسب وقت التصدير.
       const scored = hasScoring(jobSlug);
+      const hasV2 = apps.some((app) => app.formVersion >= 2);
       const scoreById = new Map<string, number | null>();
       let sheetApps = apps;
       if (scored) {
         for (const app of apps) {
+          if (app.formVersion >= 2) {
+            scoreById.set(app.id, app.totalScore);
+            continue;
+          }
           const s = scoreApplication(jobSlug, app.answersJson as Record<string, string> | null);
           scoreById.set(app.id, s.hasScoring && s.answeredScored > 0 ? s.percent : null);
         }
@@ -129,7 +144,11 @@ export async function GET(request: NextRequest) {
       }
 
       // Build dynamic question columns from constants (preferred) + answers fallback
-      const constQuestions = JOB_QUESTIONS[jobSlug] || [];
+      // أسئلة v1 وv2 بيتعرضوا كأعمدة منفصلة — كل طلب بيملا أعمدة نسخته بس.
+      const constQuestions = [
+        ...(JOB_QUESTIONS[jobSlug] || []),
+        ...(hasV2 ? V2_EXPORT_QUESTIONS : []),
+      ];
       const constQuestionIds = new Set(constQuestions.map((q) => q.id));
 
       // Discover any extra question IDs that appear in answersJson but not in constants
@@ -148,6 +167,7 @@ export async function GET(request: NextRequest) {
         'تاريخ التقديم',
         'الحالة',
         ...(scored ? ['الدرجة %'] : []),
+        ...(hasV2 ? ['التصنيف', 'سبب الاستبعاد', 'نسخة الفورم'] : []),
         'الاسم',
         'الإيميل',
         'الموبايل',
@@ -194,6 +214,9 @@ export async function GET(request: NextRequest) {
           app.createdAt,
           STATUS_LABELS[app.status] || app.status,
           ...(scored ? [scoreById.get(app.id) ?? ''] : []),
+          ...(hasV2
+            ? [app.grade || '', app.knockoutReason || '', app.formVersion]
+            : []),
           app.name,
           app.email,
           app.phone || '',
@@ -203,9 +226,14 @@ export async function GET(request: NextRequest) {
           filesText,
         ];
 
-        // Question columns
+        // Question columns — أسئلة الاختيار في v2 بتتخزن بالـvalue فبنعرض نص الخيار
         for (const q of constQuestions) {
-          row.push(answersMap[q.id] ?? answersByText[q.text] ?? '');
+          const raw = answersMap[q.id];
+          if (raw !== undefined && 'hasOptions' in q && q.hasOptions) {
+            row.push(v2OptionLabel(q.id, raw));
+            continue;
+          }
+          row.push(raw ?? answersByText[q.text] ?? '');
         }
         for (const extraId of extraQuestionIds) {
           row.push(answersMap[extraId] ?? '');
