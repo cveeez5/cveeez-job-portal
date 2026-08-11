@@ -12,6 +12,7 @@ import {
   MODERATOR_V2_PENALTIES,
   MODERATOR_V2_THRESHOLDS,
   MODERATOR_V2_MAX_SCORE,
+  MODERATOR_V2_AUTO_REJECT_ON_KNOCKOUT,
   getV2Option,
   type V2Question,
   type V2SectionId,
@@ -60,6 +61,12 @@ export interface V2Flag {
   questionId: string;
   label: string;
   note: string;
+  /**
+   * high  = الإجابات اللي كانت بتستبعد تلقائياً (تحفّظ جدّي لازم الأدمن يشوفه).
+   * normal = تنبيه عادي من الاختيارات اللي عليها flag في الـJSON.
+   * الطلبات القديمة مفيهاش الحقل ده — بتتعامل كـnormal.
+   */
+  severity?: 'high' | 'normal';
 }
 
 export interface V2QuestionScore {
@@ -111,8 +118,14 @@ function shortLabel(question: V2Question): string {
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 // ===================== الاستبعاد التلقائي =====================
-/** أول خيار عليه knockout بيوقف كل حاجة. بيرجّع null لو مفيش استبعاد. */
+/**
+ * أول خيار عليه knockout. بيرجّع null دايماً لما الاستبعاد التلقائي متوقّف
+ * (وده الوضع الحالي — شوف MODERATOR_V2_AUTO_REJECT_ON_KNOCKOUT)، وساعتها
+ * الاختيارات دي بتتسجّل كتحفّظات في collectModeratorV2Flags بدل ما توقف الفورم.
+ */
 export function detectModeratorV2Knockout(answers: Answers): V2Knockout | null {
+  if (!MODERATOR_V2_AUTO_REJECT_ON_KNOCKOUT) return null;
+
   for (const section of MODERATOR_V2_SECTIONS) {
     for (const question of section.questions) {
       const value = answerOf(answers, question.id);
@@ -131,7 +144,12 @@ export function detectModeratorV2Knockout(answers: Answers): V2Knockout | null {
   return null;
 }
 
-/** الخيارات اللي عليها flag: مش استبعاد، بس بتبان للأدمن. */
+/**
+ * التنبيهات اللي بتبان للأدمن. نوعين:
+ *  - high  : اختيارات عليها knockout في الـJSON. مع إيقاف الاستبعاد التلقائي
+ *            بقت تحفّظات بدل ما توقف الفورم، فلازم تبان بوضوح.
+ *  - normal: اختيارات عليها flag — تنبيهات عادية زي ما هي.
+ */
 export function collectModeratorV2Flags(answers: Answers): V2Flag[] {
   const flags: V2Flag[] = [];
   for (const section of MODERATOR_V2_SECTIONS) {
@@ -139,16 +157,17 @@ export function collectModeratorV2Flags(answers: Answers): V2Flag[] {
       const value = answerOf(answers, question.id);
       if (!value) continue;
       const option = getV2Option(question, value);
-      if (option?.flag) {
-        flags.push({
-          questionId: question.id,
-          label: shortLabel(question),
-          note: option.label,
-        });
-      }
+      if (!option?.flag && !option?.knockout) continue;
+      flags.push({
+        questionId: question.id,
+        label: shortLabel(question),
+        note: option.label,
+        severity: option.knockout ? 'high' : 'normal',
+      });
     }
   }
-  return flags;
+  // التحفّظات الجدّية الأول
+  return flags.sort((a, b) => (b.severity === 'high' ? 1 : 0) - (a.severity === 'high' ? 1 : 0));
 }
 
 // ===================== التحقق من الأسئلة المطلوبة =====================

@@ -36,6 +36,7 @@ interface Application {
   _count: { answers: number };
   score?: number | null;
   scoreFlags?: number;
+  scoreConcerns?: number;
   formVersion?: number;
   grade?: string | null;
   knockoutReason?: string | null;
@@ -82,6 +83,7 @@ export default function AdminApplicationsPage() {
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   const [knockoutCount, setKnockoutCount] = useState<number | null>(null);
+  const [concernsCount, setConcernsCount] = useState<number | null>(null);
   const [todayCount, setTodayCount] = useState<number | null>(null);
 
   const buildParams = useCallback(
@@ -176,6 +178,16 @@ export default function AdminApplicationsPage() {
       return params;
     };
 
+    // التحفّظات الجدّية: إجابات كانت زمان بتستبعد المتقدمة تلقائياً، ودلوقتي
+    // بتكمّل الفورم عادي والتحفّظ بيتسجّل عليها بس
+    const concerns = base();
+    concerns.set('scoreBucket', 'concerns');
+    fetch(`/api/applications?${concerns}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setConcernsCount(data?.pagination?.total ?? null))
+      .catch(() => setConcernsCount(null));
+
+    // الطلبات القديمة اللي اتستبعدت فعلاً قبل ما نلغي الاستبعاد
     const knockout = base();
     knockout.set('scoreBucket', 'knockout');
     fetch(`/api/applications?${knockout}`)
@@ -248,6 +260,24 @@ export default function AdminApplicationsPage() {
               {dateFrom === todayISO() && <X className="w-3 h-3" />}
             </button>
           )}
+          {!!concernsCount && (
+            <button
+              type="button"
+              onClick={() => {
+                setScoreBucket(scoreBucket === 'concerns' ? '' : 'concerns');
+                setPage(1);
+              }}
+              className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                scoreBucket === 'concerns'
+                  ? 'bg-orange-500/20 border-orange-500/40 text-orange-300'
+                  : 'bg-orange-500/5 border-orange-500/20 text-orange-300/70 hover:bg-orange-500/10'
+              }`}
+              title="متقدمات كمّلوا الفورم بس فيه إجابة تستدعي مراجعة قبل ما تكلميهم"
+            >
+              ⚠️ {concernsCount} فيها تحفّظات
+              {scoreBucket === 'concerns' && <X className="w-3 h-3" />}
+            </button>
+          )}
           {!!knockoutCount && (
             <button
               type="button"
@@ -260,9 +290,9 @@ export default function AdminApplicationsPage() {
                   ? 'bg-red-500/20 border-red-500/40 text-red-300'
                   : 'bg-red-500/5 border-red-500/20 text-red-300/70 hover:bg-red-500/10'
               }`}
-              title="عرض المتقدمات اللي اتستبعدوا من بوابة الفلترة"
+              title="طلبات قديمة اتستبعدت تلقائياً قبل ما نلغي الاستبعاد — مفيش ليها إجابات كاملة"
             >
-              🚫 {knockoutCount} مستبعدة تلقائياً
+              🚫 {knockoutCount} مستبعدة (قديمة)
               {scoreBucket === 'knockout' && <X className="w-3 h-3" />}
             </button>
           )}
@@ -357,7 +387,8 @@ export default function AdminApplicationsPage() {
                 <option value="gradeA">A — مرشحة قوية (75+)</option>
                 <option value="gradeB">B — قائمة انتظار (60–74)</option>
                 <option value="gradeC">C — أقل من 60</option>
-                <option value="knockout">🚫 مستبعدة تلقائياً</option>
+                <option value="concerns">⚠️ فيها تحفّظات</option>
+                <option value="knockout">🚫 مستبعدة تلقائياً (قديمة)</option>
               </optgroup>
               <optgroup label="شرايح الدرجة">
                 <option value="excellent">ممتاز (80%+)</option>
@@ -754,7 +785,7 @@ function Paginator({
 }
 
 function ScoreBadge({ app }: { app: Application }) {
-  const { score, scoreFlags: flags, grade, knockoutReason } = app;
+  const { score, scoreFlags: flags, scoreConcerns: concerns, grade, knockoutReason } = app;
 
   // طلبات v2 المستبعدة مفيش ليها درجة أصلاً
   if (knockoutReason) {
@@ -774,9 +805,14 @@ function ScoreBadge({ app }: { app: Application }) {
 
   // v2: التصنيف A/B/C هو المؤشر الأساسي. v1: شرايح الدرجة زي ما كانت.
   const style = grade ? v2GradeStyle(grade) : scoreTier(score);
-  const title = grade
-    ? `التصنيف ${grade}${flags ? ` • ${flags} تنبيه` : ''}`
-    : `${scoreTier(score).label}${flags ? ` • ${flags} تنبيه` : ''}`;
+  const base = grade ? `التصنيف ${grade}` : scoreTier(score).label;
+  const title = [
+    base,
+    concerns ? `${concerns} تحفّظ جدّي` : '',
+    flags ? `${flags} تنبيه` : '',
+  ]
+    .filter(Boolean)
+    .join(' • ');
 
   return (
     <span
@@ -786,10 +822,11 @@ function ScoreBadge({ app }: { app: Application }) {
       {grade && <span className="opacity-80">{grade}</span>}
       {score}
       {!grade && '%'}
-      {!!flags && flags > 0 && (
-        <span className="text-yellow-400" title={`${flags} تنبيه`}>
-          ⚠️
-        </span>
+      {/* تحفّظ جدّي أهم من التنبيه العادي، فبيكسبه في العرض */}
+      {!!concerns && concerns > 0 ? (
+        <span className="text-orange-400">⚠️</span>
+      ) : (
+        !!flags && flags > 0 && <span className="text-yellow-400/70">⚠️</span>
       )}
     </span>
   );

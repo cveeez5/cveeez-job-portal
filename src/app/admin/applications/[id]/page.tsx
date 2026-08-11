@@ -760,20 +760,47 @@ function V2ScoreCard({
 }
 
 function FlagList({ flags }: { flags: V2Flag[] }) {
+  // التحفّظات الجدّية = الإجابات اللي كانت زمان بتستبعد المتقدمة تلقائياً.
+  // الاستبعاد اتلغى عشان محدش يضيع، فلازم تبان هنا بوضوح بدل ما تعدي.
+  const high = flags.filter((f) => f.severity === 'high');
+  const normal = flags.filter((f) => f.severity !== 'high');
+
   return (
-    <div className="mt-4 space-y-1.5">
-      <p className="text-xs text-yellow-400/80 font-medium flex items-center gap-1.5">
-        <AlertTriangle className="w-3.5 h-3.5" />
-        نقاط تستدعي الانتباه
-      </p>
-      {flags.map((f, i) => (
-        <p
-          key={i}
-          className="text-[11px] text-yellow-300/70 bg-yellow-500/5 rounded-lg px-2 py-1.5 leading-relaxed"
-        >
-          {f.label}: «{f.note}»
-        </p>
-      ))}
+    <div className="mt-4 space-y-3">
+      {high.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-red-400/90 font-medium flex items-center gap-1.5">
+            <Ban className="w-3.5 h-3.5" />
+            تحفّظات جدّية ({high.length})
+          </p>
+          {high.map((f, i) => (
+            <div
+              key={i}
+              className="text-[11px] bg-red-500/10 border border-red-500/20 rounded-lg px-2 py-1.5 leading-relaxed"
+            >
+              <span className="text-white/45">{f.label}</span>
+              <span className="block text-red-300 font-medium mt-0.5">«{f.note}»</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {normal.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-yellow-400/80 font-medium flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            نقاط تستدعي الانتباه
+          </p>
+          {normal.map((f, i) => (
+            <p
+              key={i}
+              className="text-[11px] text-yellow-300/70 bg-yellow-500/5 rounded-lg px-2 py-1.5 leading-relaxed"
+            >
+              {f.label}: «{f.note}»
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

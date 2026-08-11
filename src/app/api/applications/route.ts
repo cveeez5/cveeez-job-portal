@@ -306,22 +306,31 @@ export async function GET(request: NextRequest) {
       app: T
     ) => {
       if (app.formVersion >= 2) {
-        const v2Flags = Array.isArray(app.flags) ? app.flags.length : 0;
-        return { ...app, score: app.totalScore, scoreFlags: v2Flags };
+        const v2Flags = Array.isArray(app.flags)
+          ? (app.flags as Array<{ severity?: string }>)
+          : [];
+        return {
+          ...app,
+          score: app.totalScore,
+          scoreFlags: v2Flags.length,
+          // التحفّظات الجدّية = الإجابات اللي كانت بتستبعد قبل ما نلغي الاستبعاد
+          scoreConcerns: v2Flags.filter((f) => f?.severity === 'high').length,
+        };
       }
       const s = scoreApplication(
         app.job.slug,
         app.answersJson as Record<string, string> | null
       );
       const score = s.hasScoring && s.answeredScored > 0 ? s.percent : null;
-      return { ...app, score, scoreFlags: s.flags.length };
+      return { ...app, score, scoreFlags: s.flags.length, scoreConcerns: 0 };
     };
 
     const inBucket = (
       score: number | null,
       flags: number,
       grade: string | null,
-      knockoutReason: string | null
+      knockoutReason: string | null,
+      concerns: number
     ): boolean => {
       switch (scoreBucket) {
         case 'excellent':
@@ -340,6 +349,8 @@ export async function GET(request: NextRequest) {
           return grade === 'C';
         case 'knockout':
           return !!knockoutReason;
+        case 'concerns':
+          return concerns > 0;
         case 'flagged':
           return flags > 0;
         case 'unscored':
@@ -360,7 +371,7 @@ export async function GET(request: NextRequest) {
       let scored = all.map(attachScore);
       if (scoreBucket) {
         scored = scored.filter((a) =>
-          inBucket(a.score, a.scoreFlags, a.grade, a.knockoutReason)
+          inBucket(a.score, a.scoreFlags, a.grade, a.knockoutReason, a.scoreConcerns)
         );
       }
       // نرتّب بالدرجة (الأعلى أولاً) لو اتطلب الترتيب أو الفلترة بالدرجة
