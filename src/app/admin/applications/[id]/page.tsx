@@ -367,6 +367,7 @@ export default function ApplicationDetailPage({
               breakdown={application.scoreBreakdown}
               penalties={application.penalties}
               flags={application.flags}
+              missingIdentity={!application.name?.trim()}
               onRescore={handleRescore}
               rescoring={rescoring}
             />
@@ -606,6 +607,7 @@ function V2ScoreCard({
   breakdown,
   penalties,
   flags,
+  missingIdentity,
   onRescore,
   rescoring,
 }: {
@@ -615,6 +617,7 @@ function V2ScoreCard({
   breakdown: V2ScoreBreakdown | null;
   penalties: V2Penalty[] | null;
   flags: V2Flag[] | null;
+  missingIdentity: boolean;
   onRescore: () => void;
   rescoring: boolean;
 }) {
@@ -631,9 +634,12 @@ function V2ScoreCard({
         <p className="text-xs text-red-300/80 bg-red-500/5 rounded-lg px-2.5 py-2 leading-relaxed whitespace-pre-wrap">
           {knockoutReason}
         </p>
-        <p className="text-[11px] text-white/25 mt-3 leading-relaxed">
-          البوابة بتيجي قبل البيانات الشخصية، فممكن الاسم والتليفون يكونوا فاضيين.
-        </p>
+        {missingIdentity && (
+          <p className="text-[11px] text-white/25 mt-3 leading-relaxed">
+            الطلب ده اتسجّل وقت ما البوابة كانت أول خطوة قبل البيانات الشخصية،
+            فمفيش معاه اسم ولا رقم. الطلبات الجديدة بتاخد البيانات الأول.
+          </p>
+        )}
         {flagList.length > 0 && <FlagList flags={flagList} />}
       </div>
     );

@@ -51,8 +51,13 @@ export interface V2Section {
   questions: V2Question[];
 }
 
-/** ملاحظة تطوير من الـJSON: knockout = استبعاد فوري ورسالة اعتذار مهذبة ووقف الفورم. */
-export const MODERATOR_V2_SECTIONS: V2Section[] = [
+/**
+ * الأقسام بترتيب الـJSON الأصلي — سايبينه زي ما هو عشان يفضل سهل نطابقه بالمصدر.
+ * ترتيب العرض الفعلي في MODERATOR_V2_SECTIONS تحت.
+ *
+ * ملاحظة تطوير من الـJSON: knockout = استبعاد فوري ورسالة اعتذار مهذبة ووقف الفورم.
+ */
+const SECTIONS_IN_JSON_ORDER: V2Section[] = [
   // ===================== 1) بوابة الفلترة =====================
   {
     id: 'gate',
@@ -409,6 +414,29 @@ Managed a portfolio of 40+ B2B accounts and exceeded quarterly targets by 18%."
   },
 ];
 
+/**
+ * ترتيب التدفق الفعلي: **البيانات الشخصية قبل بوابة الفلترة**.
+ *
+ * الـJSON كان حاطط البوابة أول حاجة، وده معناه إن أي متقدمة بتتستبعد فيها
+ * بتتسجّل من غير اسم ولا رقم — يعني حتى لو حبينا نرجعلها في وظيفة تانية
+ * مش هنعرف. البوابة لسه بتفلتر قبل الأسئلة الطويلة (خبرة + شغل + التزام)،
+ * فهي لسه بتوفر وقت المتقدمة، بس بنضمن إن كل حد دخل ليه اسم ورقم.
+ *
+ * الترتيب ده بيحكم كمان ترقيم الأسئلة وترتيب العرض في الأدمن.
+ */
+const FLOW_ORDER: V2SectionId[] = [
+  'basics',
+  'gate',
+  'experience',
+  'worksample',
+  'ai',
+  'commitment',
+];
+
+export const MODERATOR_V2_SECTIONS: V2Section[] = FLOW_ORDER.map(
+  (id) => SECTIONS_IN_JSON_ORDER.find((section) => section.id === id)!
+);
+
 // ===================== خريطة خطوات الواجهة (5 خطوات) =====================
 // الأقسام الستة بتتجمّع في 5 خطوات: worksample + ai + commitment في خطوة واحدة
 // اسمها «أسئلة الوظيفة» — التقييم بيفضل بالقسم زي ما هو في الـJSON.
@@ -420,8 +448,8 @@ export interface V2UiStep {
 }
 
 export const MODERATOR_V2_UI_STEPS: V2UiStep[] = [
-  { key: 'gate', title: 'بوابة الفلترة', icon: '🚦', sections: ['gate'] },
   { key: 'basics', title: 'المعلومات الشخصية', icon: '👤', sections: ['basics'] },
+  { key: 'gate', title: 'بوابة الفلترة', icon: '🚦', sections: ['gate'] },
   { key: 'experience', title: 'الخبرة', icon: '📋', sections: ['experience'] },
   {
     key: 'questions',

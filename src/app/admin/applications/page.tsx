@@ -81,6 +81,7 @@ export default function AdminApplicationsPage() {
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
+  const [knockoutCount, setKnockoutCount] = useState<number | null>(null);
 
   const buildParams = useCallback(
     (extra?: Record<string, string>) => {
@@ -165,6 +166,17 @@ export default function AdminApplicationsPage() {
     fetchApplications();
   }, [fetchApplications]);
 
+  // عدّاد المستبعدات تلقائياً — بيخليهم ظاهرين من الصفحة الرئيسية من غير ما
+  // يزحموا أول القايمة (هما مرتّبين آخر حاجة لأن مفيش ليهم درجة)
+  useEffect(() => {
+    const params = new URLSearchParams({ scoreBucket: 'knockout', limit: '1' });
+    if (jobFilter) params.set('job', jobFilter);
+    fetch(`/api/applications?${params}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setKnockoutCount(data?.pagination?.total ?? null))
+      .catch(() => setKnockoutCount(null));
+  }, [jobFilter]);
+
   const handleDelete = async (id: string) => {
     if (!confirm('أنت متأكد إنك عايز تحذف الطلب ده؟')) return;
 
@@ -199,6 +211,24 @@ export default function AdminApplicationsPage() {
             إجمالي {pagination?.total || 0} طلب
             {jobFilter && ` (مفلتر بوظيفة: ${JOBS.find((j) => j.id === jobFilter)?.title || jobFilter})`}
           </p>
+          {!!knockoutCount && (
+            <button
+              type="button"
+              onClick={() => {
+                setScoreBucket(scoreBucket === 'knockout' ? '' : 'knockout');
+                setPage(1);
+              }}
+              className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                scoreBucket === 'knockout'
+                  ? 'bg-red-500/20 border-red-500/40 text-red-300'
+                  : 'bg-red-500/5 border-red-500/20 text-red-300/70 hover:bg-red-500/10'
+              }`}
+              title="عرض المتقدمات اللي اتستبعدوا من بوابة الفلترة"
+            >
+              🚫 {knockoutCount} مستبعدة تلقائياً
+              {scoreBucket === 'knockout' && <X className="w-3 h-3" />}
+            </button>
+          )}
         </div>
         <button
           onClick={handleExport}
@@ -394,8 +424,15 @@ export default function AdminApplicationsPage() {
                       className="border-b border-white/5 hover:bg-white/5 transition-colors"
                     >
                       <td className="p-4">
-                        <p className="text-sm font-medium text-white">{app.name}</p>
+                        <p className="text-sm font-medium text-white">
+                          {app.name?.trim() || <span className="text-white/25">بدون اسم</span>}
+                        </p>
                         <p className="text-xs text-white/40">{app.email}</p>
+                        {app.knockoutReason && (
+                          <p className="text-[11px] text-red-300/60 mt-1 leading-relaxed">
+                            {knockoutAnswer(app.knockoutReason)}
+                          </p>
+                        )}
                       </td>
                       <td className="p-4">
                         <span className="text-sm text-white/70">
@@ -447,9 +484,16 @@ export default function AdminApplicationsPage() {
             {applications.map((app) => (
               <div key={app.id} className="glass-card p-4">
                 <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <p className="font-medium text-white text-sm">{app.name}</p>
+                  <div className="min-w-0">
+                    <p className="font-medium text-white text-sm">
+                      {app.name?.trim() || <span className="text-white/25">بدون اسم</span>}
+                    </p>
                     <p className="text-xs text-white/40">{app.email}</p>
+                    {app.knockoutReason && (
+                      <p className="text-[11px] text-red-300/60 mt-1 leading-relaxed">
+                        {knockoutAnswer(app.knockoutReason)}
+                      </p>
+                    )}
                   </div>
                   <div className="flex flex-col items-end gap-1.5">
                     <span
@@ -504,6 +548,12 @@ export default function AdminApplicationsPage() {
       )}
     </div>
   );
+}
+
+/** knockoutReason متخزّن بالشكل: "g1 — نص السؤال → «نص الخيار»". بنعرض الخيار بس. */
+function knockoutAnswer(reason: string): string {
+  const [, answer] = reason.split('→');
+  return (answer || reason).trim();
 }
 
 function FilterField({
