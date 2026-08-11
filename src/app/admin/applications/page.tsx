@@ -82,6 +82,7 @@ export default function AdminApplicationsPage() {
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   const [knockoutCount, setKnockoutCount] = useState<number | null>(null);
+  const [todayCount, setTodayCount] = useState<number | null>(null);
 
   const buildParams = useCallback(
     (extra?: Record<string, string>) => {
@@ -166,15 +167,28 @@ export default function AdminApplicationsPage() {
     fetchApplications();
   }, [fetchApplications]);
 
-  // عدّاد المستبعدات تلقائياً — بيخليهم ظاهرين من الصفحة الرئيسية من غير ما
-  // يزحموا أول القايمة (هما مرتّبين آخر حاجة لأن مفيش ليهم درجة)
+  // عدّادات وصول سريع. الترتيب الافتراضي بالدرجة بيدفن الطلبات الجديدة
+  // (طلب درجته 0 بيروح آخر صفحة)، فالعدّادين دول بيوصّلوك ليهم بدوسة واحدة.
   useEffect(() => {
-    const params = new URLSearchParams({ scoreBucket: 'knockout', limit: '1' });
-    if (jobFilter) params.set('job', jobFilter);
-    fetch(`/api/applications?${params}`)
+    const base = () => {
+      const params = new URLSearchParams({ limit: '1' });
+      if (jobFilter) params.set('job', jobFilter);
+      return params;
+    };
+
+    const knockout = base();
+    knockout.set('scoreBucket', 'knockout');
+    fetch(`/api/applications?${knockout}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => setKnockoutCount(data?.pagination?.total ?? null))
       .catch(() => setKnockoutCount(null));
+
+    const today = base();
+    today.set('dateFrom', todayISO());
+    fetch(`/api/applications?${today}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setTodayCount(data?.pagination?.total ?? null))
+      .catch(() => setTodayCount(null));
   }, [jobFilter]);
 
   const handleDelete = async (id: string) => {
@@ -211,6 +225,29 @@ export default function AdminApplicationsPage() {
             إجمالي {pagination?.total || 0} طلب
             {jobFilter && ` (مفلتر بوظيفة: ${JOBS.find((j) => j.id === jobFilter)?.title || jobFilter})`}
           </p>
+          <div className="flex flex-wrap items-center gap-2 mt-2">
+          {!!todayCount && (
+            <button
+              type="button"
+              onClick={() => {
+                const isOn = dateFrom === todayISO();
+                setDateFrom(isOn ? '' : todayISO());
+                setDateTo('');
+                // الجديد بيتشاف بالأحدث مش بالأعلى درجة
+                setSortByScore(isOn);
+                setPage(1);
+              }}
+              className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                dateFrom === todayISO()
+                  ? 'bg-green-500/20 border-green-500/40 text-green-300'
+                  : 'bg-green-500/5 border-green-500/20 text-green-300/70 hover:bg-green-500/10'
+              }`}
+              title="طلبات النهارده مرتبة بالأحدث"
+            >
+              🆕 {todayCount} طلب النهارده
+              {dateFrom === todayISO() && <X className="w-3 h-3" />}
+            </button>
+          )}
           {!!knockoutCount && (
             <button
               type="button"
@@ -218,7 +255,7 @@ export default function AdminApplicationsPage() {
                 setScoreBucket(scoreBucket === 'knockout' ? '' : 'knockout');
                 setPage(1);
               }}
-              className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
                 scoreBucket === 'knockout'
                   ? 'bg-red-500/20 border-red-500/40 text-red-300'
                   : 'bg-red-500/5 border-red-500/20 text-red-300/70 hover:bg-red-500/10'
@@ -229,6 +266,7 @@ export default function AdminApplicationsPage() {
               {scoreBucket === 'knockout' && <X className="w-3 h-3" />}
             </button>
           )}
+          </div>
         </div>
         <button
           onClick={handleExport}
@@ -360,22 +398,32 @@ export default function AdminApplicationsPage() {
             />
           </FilterField>
 
-          <button
-            type="button"
-            onClick={() => {
-              setSortByScore((v) => !v);
-              setPage(1);
-            }}
-            className={`flex items-center gap-2 h-[42px] px-4 rounded-xl border transition-colors text-sm whitespace-nowrap ${
-              sortByScore
-                ? 'bg-green-500/15 border-green-500/30 text-green-400'
-                : 'bg-white/5 border-white/5 text-white/50 hover:text-white'
-            }`}
-            title="ترتيب الطلبات حسب الدرجة الآلية (الأعلى أولاً)"
-          >
-            <ArrowDownWideNarrow className="w-4 h-4" />
-            ترتيب حسب الدرجة
-          </button>
+          {/* الترتيب بالدرجة بيدفن الطلبات الجديدة آخر القايمة، فلازم يبقى
+              واضح إنه اختيار من اتنين مش زرار مخفي */}
+          <FilterField label="الترتيب" icon={<ArrowDownWideNarrow className="w-3.5 h-3.5" />}>
+            <div className="flex h-[42px] rounded-xl border border-white/5 bg-white/5 p-1">
+              {[
+                { value: true, label: 'الأعلى درجة' },
+                { value: false, label: 'الأحدث' },
+              ].map((option) => (
+                <button
+                  key={String(option.value)}
+                  type="button"
+                  onClick={() => {
+                    setSortByScore(option.value);
+                    setPage(1);
+                  }}
+                  className={`px-3 rounded-lg text-sm whitespace-nowrap transition-colors ${
+                    sortByScore === option.value
+                      ? 'bg-green-500/20 text-green-400 font-medium'
+                      : 'text-white/40 hover:text-white'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </FilterField>
 
           {activeFilters && (
             <button
@@ -548,6 +596,13 @@ export default function AdminApplicationsPage() {
       )}
     </div>
   );
+}
+
+/** تاريخ النهارده بالتوقيت المحلي (مش UTC) بالشكل yyyy-mm-dd اللي الـAPI بيفهمه. */
+function todayISO(): string {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
 }
 
 /** knockoutReason متخزّن بالشكل: "g1 — نص السؤال → «نص الخيار»". بنعرض الخيار بس. */
